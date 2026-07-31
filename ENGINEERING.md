@@ -1,35 +1,32 @@
 # ENGINEERING.md — handover notes
 
 Handover for continuing the **Team PR Dashboard** in a Claude Code / terminal
-session. This captures the current state, decisions, and what still needs doing.
-Written 2026-07-31.
+session. Last updated 2026-07-31.
 
 ## What this is
 
 A Tauri v2 desktop app that lists all outstanding GitHub pull requests authored
-by a user-managed team, across a GitHub **Enterprise** instance. Product
-requirements as agreed with the user (Byron):
+by a user-managed team, across a GitHub **Enterprise** instance.
 
-- **Form factor:** Tauri desktop app.
-- **Scope:** enterprise-/org-wide — "anything they authored" (open PRs by any
-  team member, in any repo the token can see). Drafts excluded.
-- **"Outstanding" definition:** open + authored by a team member, with an
-  **awaiting-review** flag, and **age/staleness** shown.
-- **Team list:** starts empty; add/remove GitHub usernames from inside the app;
-  persisted to a local config file.
-- **Auth:** GitHub Enterprise base URL + Personal Access Token, entered in-app,
-  stored locally.
+- **Form factor:** Tauri desktop app (Rust backend + system WebView).
+- **Scope:** enterprise-/org-wide open PRs by any team member, in any repo the
+  token can see. Drafts excluded.
+- **Team list:** add/remove GitHub usernames in-app, or import by `org/team-slug`.
+  Persisted to a local config file.
+- **Auth:** GitHub Enterprise base URL + Personal Access Token, entered in-app.
+  Stored in OS keychain; plaintext config.json fallback for unsigned builds.
 
 ## Tech stack
 
-- **Shell:** Tauri v2 (Rust backend + system webview).
+- **Shell:** Tauri v2 (Rust backend + system WebView).
 - **Frontend:** plain HTML/CSS/JS in `ui/` — **no build step, no framework**.
-  Uses `withGlobalTauri: true`, so `window.__TAURI__.core.invoke` is available
-  directly.
+  `withGlobalTauri: true` → `window.__TAURI__.core.invoke` available directly.
 - **Backend:** Rust, single file `src-tauri/src/main.rs`.
-  - HTTP via `reqwest` (async, `rustls-tls`, no OpenSSL dependency).
-  - JSON via `serde` / `serde_json`.
-  - `tauri-plugin-opener` to open PR URLs in the external browser.
+  - HTTP: `reqwest` (async, `rustls-tls`, no OpenSSL).
+  - JSON: `serde` / `serde_json`.
+  - Async sleep for rate-limit pacing: `tokio` (`time` feature).
+  - OS keychain: `keyring` v3.
+  - Opens URLs in the external browser: `tauri-plugin-opener`.
 - Config persisted as JSON in the OS app-config dir (see README for paths).
 
 ## File map
@@ -37,9 +34,12 @@ requirements as agreed with the user (Byron):
 ```
 pr-dashboard/
 ├── package.json                     # npm scripts: dev / build / tauri
+├── Makefile                         # build shortcuts for all 5 platforms
 ├── README.md                        # user-facing setup & usage
 ├── ENGINEERING.md                   # this file
+├── AGENTS.md                        # AI agent guidance
 ├── CLAUDE.md                        # repo guide for Claude Code
+├── .github/workflows/build.yml      # CI: builds all 5 targets; releases on v* tags
 ├── ui/                              # frontend (frontendDist target)
 │   ├── index.html
 │   ├── styles.css
@@ -48,7 +48,7 @@ pr-dashboard/
     ├── Cargo.toml
     ├── build.rs
     ├── tauri.conf.json              # window, bundle, withGlobalTauri
-    ├── capabilities/default.json    # permissions: core:default, opener:default
+    ├── capabilities/default.json   # permissions: core:default, opener:default
     ├── icons/                       # generated placeholder icon set
     └── src/main.rs                  # backend + all #[tauri::command]s
 ```
@@ -58,93 +58,122 @@ pr-dashboard/
 All invoked from `ui/main.js` via `invoke("<name>", args)`. Tauri converts JS
 camelCase args to Rust snake_case.
 
-| Command           | Args (JS)                    | Returns            | Notes |
-|-------------------|------------------------------|--------------------|-------|
-| `get_settings`    | –                            | `SettingsView`     | `{ base_url, has_token, members }` — token never sent to the UI |
-| `save_connection` | `{ baseUrl, token }`         | `SettingsView`     | Empty `token` keeps the saved one |
-| `get_members`     | –                            | `string[]`         | |
-| `add_member`      | `{ login }`                  | `string[]`         | Strips leading `@`, case-insensitive dedupe, sorted |
-| `remove_member`   | `{ login }`                  | `string[]`         | |
-| `fetch_prs`       | –                            | `Pr[]`             | Errors as `Err(String)` surfaced in the UI banner |
+| Command | Args (JS) | Returns | Notes |
+|---|---|---|---|
+| `get_settings` | – | `SettingsView` | `{ base_url, has_token, members, refresh_interval_mins }` — token never sent to UI |
+| `save_connection` | `{ baseUrl, token, refreshIntervalMins? }` | `SettingsView` | Empty `token` keeps the saved one; `refreshIntervalMins` min 1 |
+| `get_members` | – | `string[]` | |
+| `add_member` | `{ login }` | `string[]` | Strips `@`, case-insensitive dedupe, sorted |
+| `remove_member` | `{ login }` | `string[]` | |
+| `import_team` | `{ teamSlug }` | `string[]` | Slug must be `org/team-slug`; merges into member list |
+| `fetch_prs` | – | `FetchResult` | See below |
+| `approve_pr` | `{ ownerRepo, prNumber, comment }` | `()` | POSTs APPROVE review |
+| `close_pr` | `{ ownerRepo, prNumber }` | `()` | PATCHes state=closed |
+| `close_pr_and_delete_branch` | `{ ownerRepo, prNumber }` | `()` | GETs head ref, closes PR, DELETEs ref |
 
-`Pr = { title, number, repo, author, url, created_at, updated_at, awaiting_review }`.
+### Types
+
+```
+SettingsView = { base_url: string, has_token: bool, members: string[], refresh_interval_mins: u32 }
+
+Pr = { title, number, repo, author, url, created_at, updated_at,
+       review_status: "awaiting" | "approved" | "changes_requested" }
+
+RateLimitStatus = { search_remaining: i64, search_limit: i64, search_reset: i64 }
+
+FetchResult = { prs: Pr[], rate_limit: RateLimitStatus }
+```
 
 ### How PRs are fetched
 
-For each member, two `GET /search/issues` calls against `<api>/search/issues`
-(`<api>` = `https://api.github.com` for github.com, else `<host>/api/v3`):
+For each member, **three** sequential `GET /search/issues` calls:
 
 ```
-is:pr is:open draft:false archived:false author:<member>                  # all open
-is:pr is:open draft:false archived:false author:<member> review:required  # awaiting review subset
+is:pr is:open draft:false archived:false author:<member>                     # all open
+is:pr is:open draft:false archived:false author:<member> review:changes_requested
+is:pr is:open draft:false archived:false author:<member> review:approved
 ```
 
-Results merged and de-duped by PR html_url; `awaiting_review = true` when the URL
-appears in the second set. Paginated to the search API's 1000-result ceiling
-(per_page=100, capped at 10 pages). Sorted oldest-first server-side; the UI can
-re-sort. Age/staleness is computed in JS (`main.js`: STALE_DAYS=7,
-VERY_STALE_DAYS=21).
+Results merged and de-duped by `html_url`. `review_status` is set by set
+membership: `changes_requested` wins; `approved` next; everything else is
+`awaiting`. Paginated to 1 000 results (per_page=100, max 10 pages).
+
+#### Rate-limit pacing
+
+`search_issues()` captures `X-RateLimit-Remaining` and `X-RateLimit-Reset` from
+every response header. `fetch_prs` tracks the running remaining count; when it
+drops below 3 before the next call, it sleeps until `reset + 2s` and then
+continues. This allows large teams (>10 members, >30 calls needed) to
+automatically spread across multiple 1-minute rate-limit windows. There is also
+a 250 ms inter-member polite delay to avoid GitHub's secondary rate limit.
+
+A `GET /rate_limit` call is made before and after the fetch (uses the core API
+quota, not search) to return current state to the UI.
 
 ## Key decisions / rationale
 
-- **No frontend build step** — keeps the app dependency-light and easy to hand
-  off. If it grows, migrating `ui/` to Vite + a framework is the natural step
-  (Tauri's `build.beforeDevCommand`/`devUrl` would then point at the dev
-  server).
-- **All GitHub calls in Rust, not the webview** — avoids CORS and keeps the PAT
-  out of the DOM. `get_settings` deliberately returns `has_token: bool` rather
-  than the token.
-- **`review:required` for "awaiting review"** — simplest reliable signal from
-  the search API without per-PR REST calls. Note it means "a review is required
-  and not yet given"; it does NOT distinguish "changes requested". See TODO.
-- **Opener plugin** for links — a Tauri webview won't open `<a>` externally on
-  its own. `main.js` intercepts `.pr-title` clicks and calls
+- **No frontend build step** — keeps the project dependency-light. Migration
+  path: add Vite + a framework, set `build.beforeDevCommand`/`devUrl` in
+  `tauri.conf.json`.
+- **All GitHub calls in Rust** — avoids CORS, keeps the PAT out of the DOM.
+  `get_settings` deliberately returns `has_token: bool`.
+- **3-state review via Search API qualifiers** — avoids per-PR REST calls.
+  `review:changes_requested` and `review:approved` are reliable signals for
+  the common case. A more precise signal would be the GraphQL `reviewDecision`
+  field — see Possible future work.
+- **Opener plugin for links** — Tauri WebView won't open `<a>` externally.
+  `main.js` intercepts `.pr-title` clicks and calls
   `invoke("plugin:opener|open_url", { url })`.
+- **Recursive `setTimeout` for auto-refresh** — `setInterval` fires at a fixed
+  wall-clock cadence regardless of how long the fetch takes. The recursive
+  approach starts the countdown only after the previous fetch fully resolves.
+- **Keyed DOM reconciliation** — `renderTable()` maintains a `Map<url, tr>` of
+  live rows. On refresh: unchanged rows are skipped entirely, changed rows are
+  updated in place, new rows are inserted, and gone rows are removed. Scroll
+  position is preserved.
 
 ## Verified (2026-07-31)
 
-- **Rust compiles clean** — upgraded toolchain from 1.87.0 → 1.97.1 (deps
-  required ≥1.88); `cargo check` and `npm run dev` both pass with 0 errors.
-- **End-to-end confirmed** against the real GHE host: 11 open PRs loaded for
-  `byronjones-elsevier`, review badges, age, and last-activity columns all
-  rendering correctly.
-- **`invoke("plugin:opener|open_url", { url })` arg is correct** — confirmed
-  against `tauri-plugin-opener-2.5.4/src/init-iife.js`; the plugin uses `url`.
+- Rust compiles clean on toolchain 1.97.1 (`cargo check` 0 errors/warnings).
+- End-to-end confirmed: 62 open PRs across 12 team members loaded from real GHE;
+  rate-limit pacing across multiple windows working correctly.
+- PR action buttons tested (approve modal, review link, close confirmations).
+- Incremental DOM update confirmed: rows update in place on refresh.
 
 ## Remaining risks / notes
 
-- **Window label** — `tauri.conf.json` defines one window without an explicit
-  `label`; Tauri defaults it to `main`, which the capability targets. If the
-  capability ever fails to apply, set `"label": "main"` explicitly.
-- **PAT stored in plaintext** in `config.json`. Acceptable for a personal tool;
-  see TODO for keychain.
-- **Icons are generated placeholders** (a simple merge-graph motif). Replace via
+- **Window label** — `tauri.conf.json` defines one window with no explicit
+  `label`; Tauri defaults to `main`. If capabilities ever fail to apply, add
+  `"label": "main"` explicitly.
+- **Keychain on unsigned builds** — macOS keychain requires a code-signed
+  binary. Dev builds fall back to plaintext in config.json automatically; this
+  is resolved once the app is code-signed for distribution.
+- **Icons are generated placeholders** — replace via
   `npm run tauri icon assets/icon.png` before distributing.
+- **Code signing not yet configured** — required for macOS notarization and
+  Windows SmartScreen bypass. Certificates must be injected as repository secrets
+  and wired into the GitHub Actions workflow.
 
-## TODO / next steps
+## Possible future work
 
-All original items are done. ✓
-
-### Possible future work
-
-- **Richer review state per PR**: the three-state model (awaiting / approved /
-  changes_requested) is based on Search API qualifiers. A more precise signal
-  would be `reviewDecision` from the GraphQL API or per-PR REST reviews.
-- **Per-member "last synced" timestamp**: show when each member's PRs were last
-  fetched individually.
-- **Keychain on signed builds**: keychain storage is implemented and falls back
-  to plaintext config.json when keychain is unavailable (e.g. unsigned dev
-  binaries). Once the app is code-signed for distribution, the keychain path
-  will activate automatically.
+- **Richer review state** — use GraphQL `reviewDecision` or per-PR REST reviews
+  for a more precise signal than Search API qualifiers.
+- **Per-member "last synced" timestamp** — show when each member's PRs were last
+  fetched.
+- **Notification on new PR** — OS-level notification when a new PR appears for a
+  tracked member (Tauri notification plugin).
+- **Signed/notarized releases** — wire Apple Developer and Windows Authenticode
+  certificates into the CI workflow.
 
 ## Build & run
 
 ```bash
 npm install
-npm run dev        # dev run
-npm run build      # installers -> src-tauri/target/release/bundle/
-cd src-tauri && cargo check   # fast compile check without launching
+npm run dev                    # launch dev mode
+npm run build                  # native installer
+cd src-tauri && cargo check    # fast Rust compile check
+make help                      # show all Makefile targets
 ```
 
-Prereqs: Rust stable (>= 1.77), Node 18+, and Tauri OS deps
+Prereqs: Rust stable ≥ 1.88, Node 18+, Tauri OS deps
 (https://tauri.app/start/prerequisites/).

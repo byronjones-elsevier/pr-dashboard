@@ -1,91 +1,122 @@
 # Team PR Dashboard
 
-A small Tauri desktop app that shows all outstanding GitHub pull requests
-authored by your team, across your whole GitHub Enterprise instance. Add and
-remove team members right inside the app.
+A Tauri desktop app that shows all outstanding GitHub pull requests authored by
+your team, across your whole GitHub Enterprise instance.
 
 ## What it does
 
 - **Org-/enterprise-wide search** — finds every _open_ PR authored by anyone on
-  your team list, in any repo you can see (drafts excluded).
-- **Awaiting-review flag** — each PR is marked "Awaiting review" when GitHub
-  reports a review is still required (`review:required`), or "Reviewed"
-  otherwise.
-- **Age & staleness** — PRs are sorted oldest-first; anything open ≥ 7 days is
-  amber and ≥ 21 days is red, so stale PRs stand out. A "Last activity" column
-  shows time since the PR was last updated.
-- **In-app team management** — add or remove GitHub usernames from the sidebar;
-  the list is saved locally and each member shows their open-PR count.
-- **Filter & sort** — "Awaiting review only" toggle, free-text filter (title /
-  repo / author), and click any column header to sort.
+  your team list, in any repo the token can see. Drafts excluded.
+- **3-state review badges** — each PR shows "Awaiting review", "Changes
+  requested", or "Approved" based on three GitHub Search API qualifiers.
+- **Age & staleness** — sorted oldest-first; ≥ 7 days is amber, ≥ 21 days is
+  red. A "Last activity" column shows time since last update.
+- **In-app team management** — add/remove GitHub usernames in the sidebar, or
+  import an entire team with `org/team-slug`. Each member shows their PR count.
+- **Filter & sort** — "Needs attention" toggle (hides approved PRs), free-text
+  filter by title/repo/author, and click any column header to sort.
+- **PR actions** — each row has four icon buttons:
+  - ✓ **Approve with comment** — opens a dialog, submits a GitHub review
+  - 👁 **Open for review** — opens the PR's Files tab in the browser
+  - ✕ **Close PR** — closes the PR via the API (with confirmation)
+  - 🗑 **Close PR + branch** — closes the PR and deletes its head branch (with confirmation)
+- **Auto-refresh** — fetches on a configurable interval (default 10 min). The
+  countdown starts only after the previous fetch fully completes.
+- **Rate-limit pacing** — tracks `X-RateLimit-Remaining` headers; sleeps until
+  the window resets when quota drops below 3 before making the next call. Large
+  teams spread automatically across multiple 1-minute windows.
+- **Incremental rendering** — on refresh, only rows whose data has changed are
+  updated. Unchanged rows are not touched; scroll position is preserved.
 
 ## Prerequisites
 
-1. **Rust** (stable) — https://rustup.rs
+1. **Rust** (stable ≥ 1.88) — https://rustup.rs
 2. **Node.js 18+** and npm
-3. Tauri OS dependencies for your platform — see
-   https://tauri.app/start/prerequisites/ (on Linux this is WebKitGTK etc.; on
-   macOS the Xcode command-line tools; on Windows the WebView2 runtime, which is
-   preinstalled on Windows 11).
+3. Tauri OS dependencies — https://tauri.app/start/prerequisites/
+   (Linux: WebKitGTK 4.1; macOS: Xcode CLI tools; Windows: WebView2 runtime)
 
 ## Run it
 
 ```bash
-cd pr-dashboard
 npm install
-npm run dev        # launches the app in development mode
+npm run dev        # launch in development mode
+```
+
+Or use `make`:
+
+```bash
+make install       # npm install
+make dev           # npm run dev
+make help          # list all targets
 ```
 
 On first launch a **Settings** dialog opens. Enter:
 
 - **GitHub Enterprise host** — e.g. `https://github.your-company.com`
-  (the `/api/v3` REST root is appended automatically; plain `github.com` also
-  works and resolves to `https://api.github.com`).
-- **Personal Access Token** — a classic PAT with the `repo` scope (or a
-  fine-grained token with pull-request read access to the relevant repos).
-  Create one under _Settings → Developer settings → Personal access tokens_ on
-  your GitHub host.
+  (`/api/v3` is appended automatically; plain `github.com` also works).
+- **Personal Access Token** — classic PAT with `repo` scope (or fine-grained
+  with pull-request read access). Create under _Settings → Developer settings →
+  Personal access tokens_ on your GitHub host.
+- **Auto-refresh interval** — minutes between automatic refreshes (minimum 1).
 
-Then add team members by GitHub username in the left sidebar and hit
-**Refresh**.
+Then add team members by GitHub username in the sidebar (or import a whole team
+with `org/team-slug`) and hit **Refresh**.
 
-## Build a distributable
+## Build distributable installers
 
 ```bash
-npm run build      # produces installers under src-tauri/target/release/bundle/
+make build                  # native platform
+make build-macos-arm        # macOS Apple Silicon (.dmg)
+make build-macos-x64        # macOS Intel (.dmg)
+make build-windows-x64      # Windows x64 (.msi / .exe)
+make build-windows-arm      # Windows ARM64 (.msi / .exe)
+make build-linux-x64        # Linux Debian x64 (.deb / .AppImage)
 ```
 
-> macOS `.icns` and Windows `.ico` icons are included. If you want to swap in
-> your own icon, drop a square PNG at `assets/icon.png` and run
-> `npm run tauri icon assets/icon.png` to regenerate the full set.
+CI builds for all five targets automatically via `.github/workflows/build.yml`.
+A GitHub Release with all bundles is created on any `v*` tag push.
+
+> To replace the placeholder icon: drop a square PNG at `assets/icon.png` and
+> run `npm run tauri icon assets/icon.png`.
 
 ## Where things live
 
-- `ui/` — the frontend (plain HTML/CSS/JS, no build step).
-- `src-tauri/src/main.rs` — the Rust backend: config storage plus the GitHub
-  API calls.
-- Your settings and team list are stored in the app config directory:
-  - macOS: `~/Library/Application Support/com.byron.prdashboard/config.json`
-  - Linux: `~/.config/com.byron.prdashboard/config.json`
-  - Windows: `%APPDATA%\com.byron.prdashboard\config.json`
+| Path | Purpose |
+|---|---|
+| `ui/` | Frontend — plain HTML/CSS/JS, no build step |
+| `src-tauri/src/main.rs` | Entire Rust backend: config, GitHub API, commands |
+| `src-tauri/Cargo.toml` | Rust dependencies |
+| `Makefile` | Build shortcuts for all platforms |
+| `.github/workflows/build.yml` | CI/CD for all 5 platform builds |
 
-## Security note
+Config and settings are stored in:
 
-The Personal Access Token is stored **in plaintext** in `config.json` in the
-app config directory above (it never leaves your machine except in requests to
-your GitHub host). This is fine for a personal tool. If you'd like it kept in
-the OS keychain instead, that's a small change — add the
-[`keyring`](https://crates.io/crates/keyring) crate and store the token there
-rather than in the JSON file. Ask and I can wire that up.
+| Platform | Path |
+|---|---|
+| macOS | `~/Library/Application Support/com.byron.prdashboard/config.json` |
+| Linux | `~/.config/com.byron.prdashboard/config.json` |
+| Windows | `%APPDATA%\com.byron.prdashboard\config.json` |
 
-## How "outstanding" is defined
+## Security
 
-For each member the app runs two GitHub searches:
+The PAT is stored in the **OS keychain** when possible (macOS Keychain, Windows
+Credential Manager, Linux Secret Service). On unsigned dev builds the keychain
+may be unavailable; the app falls back to plaintext in `config.json` in the app
+config directory above. In either case the token never leaves your machine
+except in `Authorization: Bearer` headers sent to your GitHub host, and it is
+never sent to the frontend webview.
+
+## How outstanding PRs are found
+
+For each team member the app runs three sequential `GET /search/issues` queries:
 
 ```
-is:pr is:open draft:false archived:false author:<member>                  # all open PRs
-is:pr is:open draft:false archived:false author:<member> review:required  # the awaiting-review subset
+is:pr is:open draft:false archived:false author:<member>                      # all open
+is:pr is:open draft:false archived:false author:<member> review:changes_requested
+is:pr is:open draft:false archived:false author:<member> review:approved
 ```
 
-Results are merged and de-duplicated by PR URL. The GitHub search API caps
-results at 1000 per query, which the app paginates through.
+Results are merged and de-duplicated by PR URL. Review status is determined by
+set membership: changes_requested wins over approved; anything else is "awaiting
+review". The GitHub Search API caps results at 1 000 per query (10 pages × 100),
+which the app paginates through automatically.
