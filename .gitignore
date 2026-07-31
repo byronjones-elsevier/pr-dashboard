@@ -15,7 +15,8 @@ src-tauri/gen/
 *.zip
 dist/
 
-# Claude Code local settings (machine-specific)
+# Claude Code settings (machine-specific)
+.claude/settings.json
 .claude/settings.local.json
 
 # Editor
