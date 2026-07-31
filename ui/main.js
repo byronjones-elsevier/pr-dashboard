@@ -95,6 +95,66 @@ function reviewBadge(status) {
 }
 
 // ---------------------------------------------------------------------------
+// Action icons (SVG)
+// ---------------------------------------------------------------------------
+const ICON_APPROVE = `<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6.25"/><polyline points="5.25,8.25 7,10.5 10.75,5.75"/></svg>`;
+const ICON_EYE    = `<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M1 8s2.667-5 7-5 7 5 7 5-2.667 5-7 5-7-5-7-5z"/><circle cx="8" cy="8" r="2"/></svg>`;
+const ICON_CLOSE  = `<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="8" cy="8" r="6.25"/><line x1="5.5" y1="5.5" x2="10.5" y2="10.5"/><line x1="10.5" y1="5.5" x2="5.5" y2="10.5"/></svg>`;
+const ICON_TRASH  = `<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="2,4 14,4"/><path d="M5,4V3a1,1,0,0,1,1-1h4a1,1,0,0,1,1,1v1"/><path d="M13,4l-.867,9.2A1,1,0,0,1,11.14,14H4.86A1,1,0,0,1,3.867,13.2L3,4"/><line x1="6.5" y1="7" x2="6.5" y2="11"/><line x1="9.5" y1="7" x2="9.5" y2="11"/></svg>`;
+
+// ---------------------------------------------------------------------------
+// Approve modal state
+// ---------------------------------------------------------------------------
+let pendingApprove = null; // { ownerRepo, prNumber, prTitle }
+let pendingConfirm = null; // callback to run on confirm
+
+function openApproveModal(ownerRepo, prNumber, prTitle) {
+  pendingApprove = { ownerRepo, prNumber };
+  el("approve-pr-info").textContent = `${ownerRepo} #${prNumber} — ${prTitle}`;
+  el("approve-comment").value = "";
+  el("approve-modal").classList.remove("hidden");
+  el("approve-comment").focus();
+}
+
+function closeApproveModal() {
+  pendingApprove = null;
+  el("approve-modal").classList.add("hidden");
+}
+
+async function submitApprove() {
+  if (!pendingApprove) return;
+  const { ownerRepo, prNumber } = pendingApprove;
+  const comment = el("approve-comment").value.trim();
+  const btn = el("approve-submit");
+  btn.disabled = true;
+  btn.textContent = "Approving…";
+  try {
+    await invoke("approve_pr", { ownerRepo, prNumber, comment });
+    closeApproveModal();
+    showBanner(`Approved PR #${prNumber}.`, "info");
+    await refresh();
+  } catch (e) {
+    showBanner(String(e));
+    closeApproveModal();
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Approve";
+  }
+}
+
+function openConfirmModal(title, body, onConfirm) {
+  pendingConfirm = onConfirm;
+  el("confirm-title").textContent = title;
+  el("confirm-body").textContent = body;
+  el("confirm-modal").classList.remove("hidden");
+}
+
+function closeConfirmModal() {
+  pendingConfirm = null;
+  el("confirm-modal").classList.add("hidden");
+}
+
+// ---------------------------------------------------------------------------
 // Members
 // ---------------------------------------------------------------------------
 function prCountFor(login) {
@@ -210,6 +270,7 @@ function renderTable() {
 
   for (const p of list) {
     const tr = document.createElement("tr");
+    const filesUrl = escapeHtml(p.url + "/files");
     tr.innerHTML = `
       <td>
         <a class="pr-title" href="${escapeHtml(p.url)}" data-url="${escapeHtml(p.url)}">${escapeHtml(p.title)}</a>
@@ -219,7 +280,31 @@ function renderTable() {
       <td>${escapeHtml(p.author)}</td>
       <td>${reviewBadge(p.review_status)}</td>
       <td class="age ${ageClass(p.created_at)}">${humanAge(p.created_at)}</td>
-      <td class="age ${ageClass(p.updated_at)}">${humanAge(p.updated_at)}</td>`;
+      <td class="age ${ageClass(p.updated_at)}">${humanAge(p.updated_at)}</td>
+      <td class="actions-cell">
+        <button class="action-btn approve"
+          data-action="approve"
+          data-repo="${escapeHtml(p.repo)}"
+          data-num="${p.number}"
+          data-title="${escapeHtml(p.title)}"
+          title="Approve with comment">${ICON_APPROVE}</button>
+        <button class="action-btn open-review"
+          data-action="review"
+          data-url="${filesUrl}"
+          title="Open for review (files tab)">${ICON_EYE}</button>
+        <button class="action-btn close-pr"
+          data-action="close"
+          data-repo="${escapeHtml(p.repo)}"
+          data-num="${p.number}"
+          data-title="${escapeHtml(p.title)}"
+          title="Close PR">${ICON_CLOSE}</button>
+        <button class="action-btn delete-branch"
+          data-action="delete-branch"
+          data-repo="${escapeHtml(p.repo)}"
+          data-num="${p.number}"
+          data-title="${escapeHtml(p.title)}"
+          title="Close PR and delete branch">${ICON_TRASH}</button>
+      </td>`;
     prBody.appendChild(tr);
   }
 }
@@ -321,6 +406,48 @@ prBody.addEventListener("click", (e) => {
   if (link) {
     e.preventDefault();
     openExternal(link.dataset.url);
+    return;
+  }
+
+  const btn = e.target.closest("button.action-btn");
+  if (!btn) return;
+  const { action, repo, num, title, url } = btn.dataset;
+  const prNum = parseInt(num, 10);
+
+  if (action === "approve") {
+    openApproveModal(repo, prNum, title);
+  } else if (action === "review") {
+    openExternal(url);
+  } else if (action === "close") {
+    openConfirmModal(
+      "Close pull request",
+      `Close ${repo} #${prNum} — "${title}"? This cannot be undone.`,
+      async () => {
+        closeConfirmModal();
+        try {
+          await invoke("close_pr", { ownerRepo: repo, prNumber: prNum });
+          showBanner(`Closed PR #${prNum}.`, "info");
+          await refresh();
+        } catch (err) {
+          showBanner(String(err));
+        }
+      }
+    );
+  } else if (action === "delete-branch") {
+    openConfirmModal(
+      "Close PR and delete branch",
+      `Close ${repo} #${prNum} and delete its head branch? This cannot be undone.`,
+      async () => {
+        closeConfirmModal();
+        try {
+          await invoke("close_pr_and_delete_branch", { ownerRepo: repo, prNumber: prNum });
+          showBanner(`Closed PR #${prNum} and deleted branch.`, "info");
+          await refresh();
+        } catch (err) {
+          showBanner(String(err));
+        }
+      }
+    );
   }
 });
 
@@ -330,6 +457,21 @@ el("settings-cancel").addEventListener("click", closeSettings);
 el("settings-save").addEventListener("click", saveSettings);
 el("settings-modal").addEventListener("click", (e) => {
   if (e.target.id === "settings-modal") closeSettings();
+});
+
+el("approve-cancel").addEventListener("click", closeApproveModal);
+el("approve-submit").addEventListener("click", submitApprove);
+el("approve-modal").addEventListener("click", (e) => {
+  if (e.target.id === "approve-modal") closeApproveModal();
+});
+el("approve-comment").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submitApprove();
+});
+
+el("confirm-cancel").addEventListener("click", closeConfirmModal);
+el("confirm-ok").addEventListener("click", () => pendingConfirm && pendingConfirm());
+el("confirm-modal").addEventListener("click", (e) => {
+  if (e.target.id === "confirm-modal") closeConfirmModal();
 });
 
 el("filter-awaiting").addEventListener("change", (e) => {

@@ -87,6 +87,7 @@
                 <th data-sort="review_status">Review</th>
                 <th data-sort="created_at" class="sorted-asc">Age</th>
                 <th data-sort="updated_at">Last activity</th>
+                <th class="actions-th">Actions</th>
               </tr>
             </thead>
             <tbody id="pr-body"></tbody>
@@ -129,6 +130,34 @@
         <div class="modal-actions">
           <button id="settings-cancel" class="btn ghost">Cancel</button>
           <button id="settings-save" class="btn primary">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Approve with comment modal -->
+    <div id="approve-modal" class="modal hidden">
+      <div class="modal-card">
+        <h2>Approve pull request</h2>
+        <p id="approve-pr-info" class="muted small" style="margin: -10px 0 16px;"></p>
+        <label class="field">
+          <span>Comment <span class="muted" style="font-weight:400;">(optional)</span></span>
+          <textarea id="approve-comment" rows="4" placeholder="Looks good to me!"></textarea>
+        </label>
+        <div class="modal-actions">
+          <button id="approve-cancel" class="btn ghost">Cancel</button>
+          <button id="approve-submit" class="btn primary">Approve</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Confirm modal (destructive actions) -->
+    <div id="confirm-modal" class="modal hidden">
+      <div class="modal-card" style="width: 380px;">
+        <h2 id="confirm-title">Confirm</h2>
+        <p id="confirm-body" class="muted" style="margin: -8px 0 20px; font-size: 13px;"></p>
+        <div class="modal-actions">
+          <button id="confirm-cancel" class="btn ghost">Cancel</button>
+          <button id="confirm-ok" class="btn danger">Confirm</button>
         </div>
       </div>
     </div>

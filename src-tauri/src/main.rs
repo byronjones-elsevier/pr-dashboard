@@ -533,6 +533,140 @@ async fn fetch_prs(app: tauri::AppHandle) -> Result<Vec<Pr>, String> {
     Ok(prs)
 }
 
+#[tauri::command]
+async fn approve_pr(
+    app: tauri::AppHandle,
+    owner_repo: String,
+    pr_number: i64,
+    comment: String,
+) -> Result<(), String> {
+    let s = read_settings(&app);
+    let api = api_base(&s.base_url);
+    if api.is_empty() || s.token.trim().is_empty() {
+        return Err("Not configured.".into());
+    }
+    let client = github_client()?;
+    let url = format!("{}/repos/{}/pulls/{}/reviews", api, owner_repo, pr_number);
+    let body = serde_json::json!({ "body": comment, "event": "APPROVE" });
+    let resp = client
+        .post(&url)
+        .header("Authorization", format!("Bearer {}", s.token))
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "pr-dashboard")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if resp.status().is_success() {
+        Ok(())
+    } else {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        Err(github_error(status, &text))
+    }
+}
+
+#[tauri::command]
+async fn close_pr(
+    app: tauri::AppHandle,
+    owner_repo: String,
+    pr_number: i64,
+) -> Result<(), String> {
+    let s = read_settings(&app);
+    let api = api_base(&s.base_url);
+    if api.is_empty() || s.token.trim().is_empty() {
+        return Err("Not configured.".into());
+    }
+    let client = github_client()?;
+    let url = format!("{}/repos/{}/pulls/{}", api, owner_repo, pr_number);
+    let body = serde_json::json!({ "state": "closed" });
+    let resp = client
+        .patch(&url)
+        .header("Authorization", format!("Bearer {}", s.token))
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "pr-dashboard")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if resp.status().is_success() {
+        Ok(())
+    } else {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        Err(github_error(status, &text))
+    }
+}
+
+#[tauri::command]
+async fn close_pr_and_delete_branch(
+    app: tauri::AppHandle,
+    owner_repo: String,
+    pr_number: i64,
+) -> Result<(), String> {
+    let s = read_settings(&app);
+    let api = api_base(&s.base_url);
+    if api.is_empty() || s.token.trim().is_empty() {
+        return Err("Not configured.".into());
+    }
+    let client = github_client()?;
+
+    let pr_url = format!("{}/repos/{}/pulls/{}", api, owner_repo, pr_number);
+    let pr_resp = client
+        .get(&pr_url)
+        .header("Authorization", format!("Bearer {}", s.token))
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "pr-dashboard")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !pr_resp.status().is_success() {
+        let status = pr_resp.status();
+        let text = pr_resp.text().await.unwrap_or_default();
+        return Err(github_error(status, &text));
+    }
+    let pr_json: serde_json::Value = pr_resp.json().await.map_err(|e| e.to_string())?;
+    let head_ref = pr_json
+        .get("head")
+        .and_then(|h| h.get("ref"))
+        .and_then(|r| r.as_str())
+        .ok_or_else(|| "Could not determine branch name from PR.".to_string())?
+        .to_string();
+
+    let close_body = serde_json::json!({ "state": "closed" });
+    let close_resp = client
+        .patch(&pr_url)
+        .header("Authorization", format!("Bearer {}", s.token))
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "pr-dashboard")
+        .json(&close_body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !close_resp.status().is_success() {
+        let status = close_resp.status();
+        let text = close_resp.text().await.unwrap_or_default();
+        return Err(github_error(status, &text));
+    }
+
+    let ref_url = format!("{}/repos/{}/git/refs/heads/{}", api, owner_repo, head_ref);
+    let del_resp = client
+        .delete(&ref_url)
+        .header("Authorization", format!("Bearer {}", s.token))
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "pr-dashboard")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if del_resp.status().is_success() || del_resp.status().as_u16() == 204 {
+        Ok(())
+    } else {
+        let status = del_resp.status();
+        let text = del_resp.text().await.unwrap_or_default();
+        Err(github_error(status, &text))
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -543,7 +677,10 @@ fn main() {
             add_member,
             remove_member,
             import_team,
-            fetch_prs
+            fetch_prs,
+            approve_pr,
+            close_pr,
+            close_pr_and_delete_branch
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

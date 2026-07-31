@@ -112,6 +112,14 @@ body {
   opacity: 0.5;
   cursor: default;
 }
+.btn.danger {
+  background: rgba(248, 81, 73, 0.12);
+  border-color: var(--red);
+  color: var(--red);
+}
+.btn.danger:hover {
+  background: rgba(248, 81, 73, 0.22);
+}
 
 /* Layout */
 .layout {
@@ -240,6 +248,22 @@ body {
   white-space: nowrap;
 }
 
+textarea {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-family: inherit;
+  resize: vertical;
+  outline: none;
+  width: 100%;
+}
+textarea:focus {
+  border-color: var(--accent);
+}
+
 input[type="text"],
 input[type="password"] {
   background: var(--bg);
@@ -359,6 +383,38 @@ input[type="password"]:focus {
   color: var(--red);
   border: 1px solid rgba(248, 81, 73, 0.4);
 }
+.actions-th {
+  text-align: center;
+  cursor: default !important;
+}
+.actions-cell {
+  white-space: nowrap;
+  text-align: center;
+  padding: 6px 8px !important;
+}
+.action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0;
+  transition: background 0.15s, color 0.15s;
+}
+.action-btn:hover {
+  background: var(--bg-elev-2);
+  color: var(--text);
+}
+.action-btn.approve:hover { color: var(--green); }
+.action-btn.open-review:hover { color: var(--accent); }
+.action-btn.close-pr:hover { color: var(--amber); }
+.action-btn.delete-branch:hover { color: var(--red); }
+
 .age {
   white-space: nowrap;
 }
