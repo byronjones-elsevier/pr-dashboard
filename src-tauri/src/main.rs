@@ -10,6 +10,10 @@ use tauri::Manager;
 // Persisted configuration
 // ---------------------------------------------------------------------------
 
+fn default_refresh_mins() -> u32 {
+    10
+}
+
 #[derive(Serialize, Deserialize, Clone, Default)]
 struct Settings {
     #[serde(default)]
@@ -20,6 +24,8 @@ struct Settings {
     token: String,
     #[serde(default)]
     members: Vec<String>,
+    #[serde(default = "default_refresh_mins")]
+    refresh_interval_mins: u32,
 }
 
 #[derive(Serialize)]
@@ -27,6 +33,7 @@ struct SettingsView {
     base_url: String,
     has_token: bool,
     members: Vec<String>,
+    refresh_interval_mins: u32,
 }
 
 impl From<&Settings> for SettingsView {
@@ -35,6 +42,11 @@ impl From<&Settings> for SettingsView {
             base_url: s.base_url.clone(),
             has_token: !s.token.trim().is_empty(),
             members: s.members.clone(),
+            refresh_interval_mins: if s.refresh_interval_mins == 0 {
+                default_refresh_mins()
+            } else {
+                s.refresh_interval_mins
+            },
         }
     }
 }
@@ -293,6 +305,49 @@ fn url_set(items: &[serde_json::Value]) -> HashSet<String> {
         .collect()
 }
 
+/// Snapshot of the GitHub Search API rate-limit window.
+#[derive(Serialize, Clone)]
+struct RateLimitStatus {
+    search_remaining: i64,
+    search_limit: i64,
+    /// Unix timestamp when the current window resets.
+    search_reset: i64,
+}
+
+#[derive(Serialize)]
+struct FetchResult {
+    prs: Vec<Pr>,
+    rate_limit: RateLimitStatus,
+}
+
+async fn fetch_rate_limit(
+    client: &reqwest::Client,
+    api: &str,
+    token: &str,
+) -> Result<RateLimitStatus, String> {
+    let url = format!("{}/rate_limit", api);
+    let resp = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", token))
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "pr-dashboard")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    let search = body
+        .pointer("/resources/search")
+        .ok_or("Missing search resource in rate_limit response")?;
+    Ok(RateLimitStatus {
+        search_remaining: search
+            .get("remaining")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0),
+        search_limit: search.get("limit").and_then(|v| v.as_i64()).unwrap_or(30),
+        search_reset: search.get("reset").and_then(|v| v.as_i64()).unwrap_or(0),
+    })
+}
+
 #[derive(Serialize)]
 struct Pr {
     title: String,
@@ -320,10 +375,14 @@ fn save_connection(
     app: tauri::AppHandle,
     base_url: String,
     token: String,
+    refresh_interval_mins: Option<u32>,
 ) -> Result<SettingsView, String> {
     let mut s = read_settings(&app);
     let old_url = s.base_url.clone();
     s.base_url = base_url.trim().to_string();
+    if let Some(mins) = refresh_interval_mins {
+        s.refresh_interval_mins = mins.max(1);
+    }
 
     if !token.trim().is_empty() {
         s.token = token.trim().to_string();
@@ -427,7 +486,7 @@ async fn import_team(app: tauri::AppHandle, team_slug: String) -> Result<Vec<Str
 }
 
 #[tauri::command]
-async fn fetch_prs(app: tauri::AppHandle) -> Result<Vec<Pr>, String> {
+async fn fetch_prs(app: tauri::AppHandle) -> Result<FetchResult, String> {
     let s = read_settings(&app);
     if s.base_url.trim().is_empty() || s.token.trim().is_empty() {
         return Err("Set the GitHub host and token in Settings first.".into());
@@ -436,14 +495,40 @@ async fn fetch_prs(app: tauri::AppHandle) -> Result<Vec<Pr>, String> {
     if api.is_empty() {
         return Err("The GitHub host looks invalid.".into());
     }
-    if s.members.is_empty() {
-        return Ok(vec![]);
-    }
 
     let client = github_client()?;
+
+    // Check rate limit before starting. Each member needs 3 search API calls.
+    let rate_limit = fetch_rate_limit(&client, &api, &s.token).await?;
+    let needed = (s.members.len() as i64) * 3;
+    if rate_limit.search_remaining < needed {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let wait_secs = (rate_limit.search_reset - now).max(0);
+        return Err(format!(
+            "Search API rate limit: {} of {} calls remaining (resets in {}s). \
+             Increase the refresh interval or wait before refreshing.",
+            rate_limit.search_remaining, rate_limit.search_limit, wait_secs
+        ));
+    }
+
+    if s.members.is_empty() {
+        return Ok(FetchResult {
+            prs: vec![],
+            rate_limit,
+        });
+    }
+
     let mut by_url: HashMap<String, Pr> = HashMap::new();
 
-    for member in &s.members {
+    for (i, member) in s.members.iter().enumerate() {
+        // Polite delay between members to avoid secondary rate limits.
+        if i > 0 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
+        }
+
         let base_q = format!("is:pr is:open draft:false archived:false author:{}", member);
 
         // Fetch all open PRs and both review-state subsets in parallel would
@@ -530,7 +615,13 @@ async fn fetch_prs(app: tauri::AppHandle) -> Result<Vec<Pr>, String> {
 
     let mut prs: Vec<Pr> = by_url.into_values().collect();
     prs.sort_by(|a, b| a.created_at.cmp(&b.created_at));
-    Ok(prs)
+
+    // Re-fetch rate limit so the UI shows the state *after* consuming quota.
+    let rate_limit = fetch_rate_limit(&client, &api, &s.token)
+        .await
+        .unwrap_or(rate_limit);
+
+    Ok(FetchResult { prs, rate_limit })
 }
 
 #[tauri::command]

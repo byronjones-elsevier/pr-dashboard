@@ -13,6 +13,7 @@
         <h1>Team PR Dashboard</h1>
       </div>
       <div class="topbar-actions">
+        <span id="rate-limit-badge" class="rate-limit-badge hidden"></span>
         <span id="last-refresh" class="muted"></span>
         <button id="refresh-btn" class="btn primary">Refresh</button>
         <button id="settings-btn" class="btn ghost" title="Settings">⚙︎</button>
@@ -113,6 +114,20 @@
             >The REST API root (<code>/api/v3</code>) is added
             automatically.</small
           >
+        </label>
+        <label class="field">
+          <span>Auto-refresh interval</span>
+          <div class="refresh-row">
+            <input
+              id="refresh-mins"
+              type="number"
+              min="1"
+              max="120"
+              style="width: 80px;"
+            />
+            <span class="muted" style="font-size: 13px;">minutes</span>
+          </div>
+          <small class="muted">How often the dashboard refreshes automatically.</small>
         </label>
         <label class="field">
           <span>Personal Access Token</span>

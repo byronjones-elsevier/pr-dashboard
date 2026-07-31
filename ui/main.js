@@ -15,10 +15,11 @@ let sortKey = "created_at";
 let sortDir = "asc"; // asc = oldest first
 let needsAttentionOnly = false;
 let searchText = "";
+let lastRateLimit = null; // RateLimitStatus from last fetch_prs call
+let autoRefreshMs = 10 * 60 * 1000; // updated from settings on load
 
 const STALE_DAYS = 7;
 const VERY_STALE_DAYS = 21;
-const AUTO_REFRESH_MS = 5 * 60 * 1000; // 5 minutes
 
 // ---------------------------------------------------------------------------
 // Element refs
@@ -32,6 +33,7 @@ const banner = el("status-banner");
 const summary = el("summary");
 const lastRefresh = el("last-refresh");
 const refreshBtn = el("refresh-btn");
+const rateLimitBadge = el("rate-limit-badge");
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -92,6 +94,33 @@ function reviewBadge(status) {
     default:
       return `<span class="badge awaiting">Awaiting review</span>`;
   }
+}
+
+function updateRateLimitBadge(rl) {
+  if (!rl) {
+    rateLimitBadge.classList.add("hidden");
+    return;
+  }
+  const { search_remaining, search_limit, search_reset } = rl;
+  const needed = members.length * 3;
+  const pct = search_limit > 0 ? search_remaining / search_limit : 1;
+  const low = search_remaining < Math.max(needed * 2, 6); // < 2 refreshes left
+  const critical = search_remaining < needed;             // < 1 refresh left
+
+  let cls = "rate-limit-badge";
+  if (critical) cls += " critical";
+  else if (low) cls += " low";
+
+  const now = Math.floor(Date.now() / 1000);
+  const resetIn = Math.max(0, search_reset - now);
+  const resetStr = resetIn > 0 ? ` · resets in ${resetIn}s` : "";
+  rateLimitBadge.className = cls;
+  rateLimitBadge.textContent = `Search API ${search_remaining}/${search_limit}${resetStr}`;
+  rateLimitBadge.title = critical
+    ? "Rate limit critical — auto-refresh paused until quota recovers."
+    : low
+    ? "Rate limit low — auto-refresh may be skipped."
+    : "GitHub Search API quota";
 }
 
 // ---------------------------------------------------------------------------
@@ -323,7 +352,10 @@ async function refresh() {
   refreshBtn.textContent = "Loading…";
   clearBanner();
   try {
-    prs = await invoke("fetch_prs");
+    const result = await invoke("fetch_prs");
+    prs = result.prs;
+    lastRateLimit = result.rate_limit;
+    updateRateLimitBadge(lastRateLimit);
     lastRefresh.textContent = `Updated ${new Date().toLocaleTimeString()}`;
     renderTable();
     renderMembers();
@@ -344,6 +376,7 @@ function openSettings() {
   el("token").placeholder = window.__cfg?.has_token
     ? "•••••••• (leave blank to keep saved token)"
     : "ghp_…";
+  el("refresh-mins").value = window.__cfg?.refresh_interval_mins ?? 10;
   el("settings-modal").classList.remove("hidden");
 }
 function closeSettings() {
@@ -353,12 +386,22 @@ function closeSettings() {
 async function saveSettings() {
   const base_url = el("base-url").value.trim();
   const token = el("token").value;
+  const refreshMins = parseInt(el("refresh-mins").value, 10);
   if (!base_url) {
     showBanner("Enter your GitHub host.");
     return;
   }
+  if (Number.isNaN(refreshMins) || refreshMins < 1) {
+    showBanner("Refresh interval must be at least 1 minute.");
+    return;
+  }
   try {
-    window.__cfg = await invoke("save_connection", { baseUrl: base_url, token });
+    window.__cfg = await invoke("save_connection", {
+      baseUrl: base_url,
+      token,
+      refreshIntervalMins: refreshMins,
+    });
+    autoRefreshMs = window.__cfg.refresh_interval_mins * 60 * 1000;
     closeSettings();
     clearBanner();
     await refresh();
@@ -509,14 +552,20 @@ async function init() {
     members = window.__cfg.members || [];
     renderMembers();
     renderTable();
+    autoRefreshMs = (window.__cfg.refresh_interval_mins ?? 10) * 60 * 1000;
+
     if (!window.__cfg.base_url || !window.__cfg.has_token) {
       openSettings();
     } else {
       await refresh();
-      // Auto-refresh every 5 minutes; skip if a manual refresh is in progress.
+      // Auto-refresh on the configured interval. Skip if a manual refresh is
+      // in progress or if the Search API quota is too low for one full fetch.
       setInterval(() => {
-        if (!refreshBtn.disabled) refresh();
-      }, AUTO_REFRESH_MS);
+        if (refreshBtn.disabled) return;
+        const needed = members.length * 3;
+        if (lastRateLimit && lastRateLimit.search_remaining < needed) return;
+        refresh();
+      }, autoRefreshMs);
     }
   } catch (e) {
     showBanner("Failed to start: " + String(e));
