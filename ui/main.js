@@ -263,16 +263,69 @@ function sortedFilteredPrs() {
   return list;
 }
 
+// Build the innerHTML for a single PR row.
+function prRowHtml(p) {
+  const filesUrl = escapeHtml(p.url + "/files");
+  return `
+    <td>
+      <a class="pr-title" href="${escapeHtml(p.url)}" data-url="${escapeHtml(p.url)}">${escapeHtml(p.title)}</a>
+      <span class="pr-num">#${p.number}</span>
+    </td>
+    <td class="repo-cell">${escapeHtml(p.repo)}</td>
+    <td>${escapeHtml(p.author)}</td>
+    <td>${reviewBadge(p.review_status)}</td>
+    <td class="age ${ageClass(p.created_at)}">${humanAge(p.created_at)}</td>
+    <td class="age ${ageClass(p.updated_at)}">${humanAge(p.updated_at)}</td>
+    <td class="actions-cell">
+      <button class="action-btn approve"
+        data-action="approve" data-repo="${escapeHtml(p.repo)}"
+        data-num="${p.number}" data-title="${escapeHtml(p.title)}"
+        title="Approve with comment">${ICON_APPROVE}</button>
+      <button class="action-btn open-review"
+        data-action="review" data-url="${filesUrl}"
+        title="Open for review (files tab)">${ICON_EYE}</button>
+      <button class="action-btn close-pr"
+        data-action="close" data-repo="${escapeHtml(p.repo)}"
+        data-num="${p.number}" data-title="${escapeHtml(p.title)}"
+        title="Close PR">${ICON_CLOSE}</button>
+      <button class="action-btn delete-branch"
+        data-action="delete-branch" data-repo="${escapeHtml(p.repo)}"
+        data-num="${p.number}" data-title="${escapeHtml(p.title)}"
+        title="Close PR and delete branch">${ICON_TRASH}</button>
+    </td>`;
+}
+
+// Create a fresh <tr> keyed by PR URL.
+function makePrRow(p) {
+  const tr = document.createElement("tr");
+  tr.dataset.prUrl = p.url;
+  tr.innerHTML = prRowHtml(p);
+  tr._snap = p;
+  return tr;
+}
+
+// Update an existing row only when something visible has changed.
+function syncPrRow(tr, p) {
+  const s = tr._snap;
+  if (
+    s &&
+    s.title === p.title &&
+    s.review_status === p.review_status &&
+    s.created_at === p.created_at &&
+    s.updated_at === p.updated_at
+  )
+    return;
+  tr.innerHTML = prRowHtml(p);
+  tr._snap = p;
+}
+
 function renderTable() {
   const list = sortedFilteredPrs();
-  prBody.innerHTML = "";
 
+  // Summary bar
   const awaiting = prs.filter((p) => p.review_status === "awaiting").length;
-  const changes = prs.filter(
-    (p) => p.review_status === "changes_requested"
-  ).length;
+  const changes = prs.filter((p) => p.review_status === "changes_requested").length;
   const approved = prs.filter((p) => p.review_status === "approved").length;
-
   if (members.length) {
     const parts = [`${prs.length} open PR${prs.length === 1 ? "" : "s"}`];
     if (awaiting) parts.push(`${awaiting} awaiting`);
@@ -283,59 +336,46 @@ function renderTable() {
     summary.textContent = "";
   }
 
+  // Empty-state messaging (don't return early — fall through to reconcile).
   if (members.length === 0) {
     emptyState.classList.remove("hidden");
     emptyState.textContent =
       "Add team members in the sidebar to see their open pull requests.";
-    return;
-  }
-  if (list.length === 0) {
+  } else if (list.length === 0) {
     emptyState.classList.remove("hidden");
     emptyState.textContent = prs.length
       ? "No pull requests match the current filter."
       : "No open pull requests found for these members. 🎉";
-    return;
+  } else {
+    emptyState.classList.add("hidden");
   }
-  emptyState.classList.add("hidden");
 
-  for (const p of list) {
-    const tr = document.createElement("tr");
-    const filesUrl = escapeHtml(p.url + "/files");
-    tr.innerHTML = `
-      <td>
-        <a class="pr-title" href="${escapeHtml(p.url)}" data-url="${escapeHtml(p.url)}">${escapeHtml(p.title)}</a>
-        <span class="pr-num">#${p.number}</span>
-      </td>
-      <td class="repo-cell">${escapeHtml(p.repo)}</td>
-      <td>${escapeHtml(p.author)}</td>
-      <td>${reviewBadge(p.review_status)}</td>
-      <td class="age ${ageClass(p.created_at)}">${humanAge(p.created_at)}</td>
-      <td class="age ${ageClass(p.updated_at)}">${humanAge(p.updated_at)}</td>
-      <td class="actions-cell">
-        <button class="action-btn approve"
-          data-action="approve"
-          data-repo="${escapeHtml(p.repo)}"
-          data-num="${p.number}"
-          data-title="${escapeHtml(p.title)}"
-          title="Approve with comment">${ICON_APPROVE}</button>
-        <button class="action-btn open-review"
-          data-action="review"
-          data-url="${filesUrl}"
-          title="Open for review (files tab)">${ICON_EYE}</button>
-        <button class="action-btn close-pr"
-          data-action="close"
-          data-repo="${escapeHtml(p.repo)}"
-          data-num="${p.number}"
-          data-title="${escapeHtml(p.title)}"
-          title="Close PR">${ICON_CLOSE}</button>
-        <button class="action-btn delete-branch"
-          data-action="delete-branch"
-          data-repo="${escapeHtml(p.repo)}"
-          data-num="${p.number}"
-          data-title="${escapeHtml(p.title)}"
-          title="Close PR and delete branch">${ICON_TRASH}</button>
-      </td>`;
-    prBody.appendChild(tr);
+  // Keyed reconciliation: move/update/add rows without wiping the table.
+  // Rows whose data hasn't changed are left completely untouched.
+  const oldRows = new Map(
+    Array.from(prBody.rows)
+      .filter((tr) => tr.dataset.prUrl)
+      .map((tr) => [tr.dataset.prUrl, tr])
+  );
+  const seen = new Set();
+
+  for (let i = 0; i < list.length; i++) {
+    const p = list[i];
+    let tr = oldRows.get(p.url);
+    if (tr) {
+      syncPrRow(tr, p);
+      seen.add(p.url);
+    } else {
+      tr = makePrRow(p);
+    }
+    // Place tr at position i without disturbing other rows unnecessarily.
+    const atI = prBody.rows[i];
+    if (atI !== tr) prBody.insertBefore(tr, atI || null);
+  }
+
+  // Remove rows for PRs that have been closed or filtered out.
+  for (const [url, tr] of oldRows) {
+    if (!seen.has(url)) tr.remove();
   }
 }
 
