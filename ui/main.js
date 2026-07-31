@@ -17,6 +17,7 @@ let needsAttentionOnly = false;
 let searchText = "";
 let lastRateLimit = null; // RateLimitStatus from last fetch_prs call
 let autoRefreshMs = 10 * 60 * 1000; // updated from settings on load
+let autoRefreshTimer = null;
 
 const STALE_DAYS = 7;
 const VERY_STALE_DAYS = 21;
@@ -341,6 +342,21 @@ function renderTable() {
 // ---------------------------------------------------------------------------
 // Refresh
 // ---------------------------------------------------------------------------
+
+// Schedules the next auto-refresh to fire autoRefreshMs after THIS call
+// returns — i.e. the countdown only begins once the previous fetch is done.
+function scheduleNextRefresh() {
+  clearTimeout(autoRefreshTimer);
+  autoRefreshTimer = setTimeout(async () => {
+    const needed = members.length * 3;
+    const rateLimitOk = !lastRateLimit || lastRateLimit.search_remaining >= needed;
+    if (!refreshBtn.disabled && members.length > 0 && rateLimitOk) {
+      await refresh();
+    }
+    scheduleNextRefresh();
+  }, autoRefreshMs);
+}
+
 async function refresh() {
   if (members.length === 0) {
     prs = [];
@@ -405,6 +421,7 @@ async function saveSettings() {
     closeSettings();
     clearBanner();
     await refresh();
+    scheduleNextRefresh();
   } catch (e) {
     showBanner(String(e));
   }
@@ -558,14 +575,7 @@ async function init() {
       openSettings();
     } else {
       await refresh();
-      // Auto-refresh on the configured interval. Skip if a manual refresh is
-      // in progress or if the Search API quota is too low for one full fetch.
-      setInterval(() => {
-        if (refreshBtn.disabled) return;
-        const needed = members.length * 3;
-        if (lastRateLimit && lastRateLimit.search_remaining < needed) return;
-        refresh();
-      }, autoRefreshMs);
+      scheduleNextRefresh();
     }
   } catch (e) {
     showBanner("Failed to start: " + String(e));
