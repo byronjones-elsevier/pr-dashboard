@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Team PR Dashboard</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="dot"></span>
+        <h1>Team PR Dashboard</h1>
+      </div>
+      <div class="topbar-actions">
+        <span id="last-refresh" class="muted"></span>
+        <button id="refresh-btn" class="btn primary">Refresh</button>
+        <button id="settings-btn" class="btn ghost" title="Settings">⚙︎</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <!-- Sidebar: team members -->
+      <aside class="sidebar">
+        <h2>Team</h2>
+        <form id="add-member-form" class="add-row">
+          <input
+            id="member-input"
+            type="text"
+            placeholder="GitHub username"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <button type="submit" class="btn small">Add</button>
+        </form>
+        <ul id="member-list" class="member-list"></ul>
+        <p id="member-empty" class="muted small">
+          No members yet. Add a GitHub username above to start tracking their
+          open pull requests.
+        </p>
+      </aside>
+
+      <!-- Main content: PR table -->
+      <section class="content">
+        <div class="toolbar">
+          <div class="filters">
+            <label class="chk">
+              <input type="checkbox" id="filter-awaiting" />
+              Awaiting review only
+            </label>
+            <input
+              id="search-box"
+              type="text"
+              class="search"
+              placeholder="Filter by title, repo, or author…"
+            />
+          </div>
+          <div class="summary" id="summary"></div>
+        </div>
+
+        <div id="status-banner" class="banner hidden"></div>
+
+        <div class="table-wrap">
+          <table class="pr-table">
+            <thead>
+              <tr>
+                <th data-sort="title">PR</th>
+                <th data-sort="repo">Repository</th>
+                <th data-sort="author">Author</th>
+                <th data-sort="awaiting_review">Review</th>
+                <th data-sort="created_at" class="sorted-asc">Age</th>
+                <th data-sort="updated_at">Last activity</th>
+              </tr>
+            </thead>
+            <tbody id="pr-body"></tbody>
+          </table>
+          <div id="empty-state" class="empty hidden"></div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Settings modal -->
+    <div id="settings-modal" class="modal hidden">
+      <div class="modal-card">
+        <h2>Connection settings</h2>
+        <label class="field">
+          <span>GitHub Enterprise host</span>
+          <input
+            id="base-url"
+            type="text"
+            placeholder="https://github.your-company.com"
+            spellcheck="false"
+          />
+          <small class="muted"
+            >The REST API root (<code>/api/v3</code>) is added
+            automatically.</small
+          >
+        </label>
+        <label class="field">
+          <span>Personal Access Token</span>
+          <input
+            id="token"
+            type="password"
+            placeholder="ghp_… (leave blank to keep the saved token)"
+            spellcheck="false"
+          />
+          <small class="muted"
+            >Needs <code>repo</code> scope. Stored locally in this app's config
+            folder.</small
+          >
+        </label>
+        <div class="modal-actions">
+          <button id="settings-cancel" class="btn ghost">Cancel</button>
+          <button id="settings-save" class="btn primary">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="main.js"></script>
+  </body>
+</html>

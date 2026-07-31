@@ -1,0 +1,25 @@
+# Node
+node_modules/
+npm-debug.log*
+
+# Rust / Tauri build artifacts
+src-tauri/target/
+src-tauri/gen/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Distribution bundles / release zips
+*.zip
+dist/
+
+# Claude Code local settings (machine-specific)
+.claude/settings.local.json
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
