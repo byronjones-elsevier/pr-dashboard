@@ -193,15 +193,32 @@ fn github_client() -> Result<reqwest::Client, String> {
         .map_err(|e| format!("Could not create HTTP client: {e}"))
 }
 
-/// Paginate `search/issues`. Returns raw `items` JSON values.
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+}
+
+struct SearchResponse {
+    items: Vec<serde_json::Value>,
+    /// Remaining calls in the current window from X-RateLimit-Remaining, or -1 if absent.
+    rate_remaining: i64,
+    /// Window-reset Unix timestamp from X-RateLimit-Reset, or 0 if absent.
+    rate_reset: i64,
+}
+
+/// Paginate `search/issues`. Returns items plus the rate-limit headers from the last page.
 async fn search_issues(
     client: &reqwest::Client,
     api: &str,
     token: &str,
     query: &str,
-) -> Result<Vec<serde_json::Value>, String> {
+) -> Result<SearchResponse, String> {
     let mut out: Vec<serde_json::Value> = Vec::new();
     let mut page: u32 = 1;
+    let mut rate_remaining: i64 = -1;
+    let mut rate_reset: i64 = 0;
     loop {
         let url = format!("{}/search/issues", api);
         let page_str = page.to_string();
@@ -219,6 +236,14 @@ async fn search_issues(
             .send()
             .await
             .map_err(|e| format!("Request failed: {e}"))?;
+
+        // Capture rate-limit headers before consuming the body.
+        if let Some(v) = resp.headers().get("x-ratelimit-remaining") {
+            rate_remaining = v.to_str().ok().and_then(|s| s.parse().ok()).unwrap_or(rate_remaining);
+        }
+        if let Some(v) = resp.headers().get("x-ratelimit-reset") {
+            rate_reset = v.to_str().ok().and_then(|s| s.parse().ok()).unwrap_or(rate_reset);
+        }
 
         let status = resp.status();
         let text = resp
@@ -245,7 +270,7 @@ async fn search_issues(
         }
         page += 1;
     }
-    Ok(out)
+    Ok(SearchResponse { items: out, rate_remaining, rate_reset })
 }
 
 /// Paginate a list endpoint that returns a top-level JSON array (e.g. team members).
@@ -498,61 +523,69 @@ async fn fetch_prs(app: tauri::AppHandle) -> Result<FetchResult, String> {
 
     let client = github_client()?;
 
-    // Check rate limit before starting. Each member needs 3 search API calls.
-    let rate_limit = fetch_rate_limit(&client, &api, &s.token).await?;
-    let needed = (s.members.len() as i64) * 3;
-    if rate_limit.search_remaining < needed {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64;
-        let wait_secs = (rate_limit.search_reset - now).max(0);
-        return Err(format!(
-            "Search API rate limit: {} of {} calls remaining (resets in {}s). \
-             Increase the refresh interval or wait before refreshing.",
-            rate_limit.search_remaining, rate_limit.search_limit, wait_secs
-        ));
-    }
+    // Fetch initial rate-limit state (uses the core API, not the search quota).
+    let initial_rl = fetch_rate_limit(&client, &api, &s.token).await?;
 
     if s.members.is_empty() {
-        return Ok(FetchResult {
-            prs: vec![],
-            rate_limit,
-        });
+        return Ok(FetchResult { prs: vec![], rate_limit: initial_rl });
     }
+
+    // Track remaining search quota from response headers so we can sleep
+    // between calls when the window is nearly exhausted, allowing the app
+    // to pace itself across multiple 1-minute windows automatically.
+    let mut remaining = initial_rl.search_remaining;
+    let mut reset_at = initial_rl.search_reset;
 
     let mut by_url: HashMap<String, Pr> = HashMap::new();
 
     for (i, member) in s.members.iter().enumerate() {
-        // Polite delay between members to avoid secondary rate limits.
-        if i > 0 {
+        // Before each member's 3 calls: sleep if the window is exhausted,
+        // or add a short inter-member pause to avoid secondary rate limits.
+        if remaining < 3 && remaining >= 0 {
+            let wait = ((reset_at - unix_now()) + 2).max(1) as u64;
+            tokio::time::sleep(tokio::time::Duration::from_secs(wait)).await;
+            // Remaining will be refreshed from the next response header.
+            remaining = 30;
+        } else if i > 0 {
             tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
         }
 
         let base_q = format!("is:pr is:open draft:false archived:false author:{}", member);
 
-        // Fetch all open PRs and both review-state subsets in parallel would
-        // exceed the search API's secondary rate limit; run them sequentially.
-        let items = search_issues(&client, &api, &s.token, &base_q).await?;
+        // Three sequential search calls per member; pace between each one.
+        let r1 = search_issues(&client, &api, &s.token, &base_q).await?;
+        if r1.rate_remaining >= 0 { remaining = r1.rate_remaining; }
+        if r1.rate_reset > 0 { reset_at = r1.rate_reset; }
 
-        let changes_set = url_set(
-            &search_issues(
-                &client,
-                &api,
-                &s.token,
-                &format!("{} review:changes_requested", base_q),
-            )
-            .await?,
-        );
-        let approved_set = url_set(
-            &search_issues(
-                &client,
-                &api,
-                &s.token,
-                &format!("{} review:approved", base_q),
-            )
-            .await?,
-        );
+        if remaining < 3 && remaining >= 0 {
+            let wait = ((reset_at - unix_now()) + 2).max(1) as u64;
+            tokio::time::sleep(tokio::time::Duration::from_secs(wait)).await;
+            remaining = 30;
+        }
+
+        let r2 = search_issues(
+            &client, &api, &s.token,
+            &format!("{} review:changes_requested", base_q),
+        ).await?;
+        if r2.rate_remaining >= 0 { remaining = r2.rate_remaining; }
+        if r2.rate_reset > 0 { reset_at = r2.rate_reset; }
+
+        if remaining < 3 && remaining >= 0 {
+            let wait = ((reset_at - unix_now()) + 2).max(1) as u64;
+            tokio::time::sleep(tokio::time::Duration::from_secs(wait)).await;
+            remaining = 30;
+        }
+
+        let r3 = search_issues(
+            &client, &api, &s.token,
+            &format!("{} review:approved", base_q),
+        ).await?;
+        if r3.rate_remaining >= 0 { remaining = r3.rate_remaining; }
+        if r3.rate_reset > 0 { reset_at = r3.rate_reset; }
+
+        let items = r1.items;
+        let changes_set = url_set(&r2.items);
+        let approved_set = url_set(&r3.items);
 
         for it in items {
             let url = it
@@ -619,7 +652,7 @@ async fn fetch_prs(app: tauri::AppHandle) -> Result<FetchResult, String> {
     // Re-fetch rate limit so the UI shows the state *after* consuming quota.
     let rate_limit = fetch_rate_limit(&client, &api, &s.token)
         .await
-        .unwrap_or(rate_limit);
+        .unwrap_or(initial_rl);
 
     Ok(FetchResult { prs, rate_limit })
 }
