@@ -13,11 +13,12 @@ let members = [];
 let prs = [];
 let sortKey = "created_at";
 let sortDir = "asc"; // asc = oldest first
-let awaitingOnly = false;
+let needsAttentionOnly = false;
 let searchText = "";
 
 const STALE_DAYS = 7;
 const VERY_STALE_DAYS = 21;
+const AUTO_REFRESH_MS = 5 * 60 * 1000; // 5 minutes
 
 // ---------------------------------------------------------------------------
 // Element refs
@@ -82,6 +83,17 @@ function clearBanner() {
   banner.className = "banner hidden";
 }
 
+function reviewBadge(status) {
+  switch (status) {
+    case "changes_requested":
+      return `<span class="badge changes">Changes requested</span>`;
+    case "approved":
+      return `<span class="badge approved">Approved</span>`;
+    default:
+      return `<span class="badge awaiting">Awaiting review</span>`;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Members
 // ---------------------------------------------------------------------------
@@ -120,7 +132,6 @@ async function addMember(login) {
 async function removeMember(login) {
   try {
     members = await invoke("remove_member", { login });
-    // Drop that member's PRs locally so the view updates instantly.
     prs = prs.filter((p) => p.author.toLowerCase() !== login.toLowerCase());
     renderMembers();
     renderTable();
@@ -135,7 +146,10 @@ async function removeMember(login) {
 function sortedFilteredPrs() {
   let list = prs.slice();
 
-  if (awaitingOnly) list = list.filter((p) => p.awaiting_review);
+  // "Needs attention" = awaiting review or changes have been requested.
+  if (needsAttentionOnly) {
+    list = list.filter((p) => p.review_status !== "approved");
+  }
 
   if (searchText) {
     const q = searchText.toLowerCase();
@@ -150,13 +164,8 @@ function sortedFilteredPrs() {
   list.sort((a, b) => {
     let av = a[sortKey];
     let bv = b[sortKey];
-    if (sortKey === "awaiting_review") {
-      av = av ? 1 : 0;
-      bv = bv ? 1 : 0;
-    } else {
-      av = String(av).toLowerCase();
-      bv = String(bv).toLowerCase();
-    }
+    av = String(av).toLowerCase();
+    bv = String(bv).toLowerCase();
     if (av < bv) return sortDir === "asc" ? -1 : 1;
     if (av > bv) return sortDir === "asc" ? 1 : -1;
     return 0;
@@ -168,10 +177,21 @@ function renderTable() {
   const list = sortedFilteredPrs();
   prBody.innerHTML = "";
 
-  const awaitingCount = prs.filter((p) => p.awaiting_review).length;
-  summary.textContent = members.length
-    ? `${prs.length} open PR${prs.length === 1 ? "" : "s"} · ${awaitingCount} awaiting review`
-    : "";
+  const awaiting = prs.filter((p) => p.review_status === "awaiting").length;
+  const changes = prs.filter(
+    (p) => p.review_status === "changes_requested"
+  ).length;
+  const approved = prs.filter((p) => p.review_status === "approved").length;
+
+  if (members.length) {
+    const parts = [`${prs.length} open PR${prs.length === 1 ? "" : "s"}`];
+    if (awaiting) parts.push(`${awaiting} awaiting`);
+    if (changes) parts.push(`${changes} changes requested`);
+    if (approved) parts.push(`${approved} approved`);
+    summary.textContent = parts.join(" · ");
+  } else {
+    summary.textContent = "";
+  }
 
   if (members.length === 0) {
     emptyState.classList.remove("hidden");
@@ -190,9 +210,6 @@ function renderTable() {
 
   for (const p of list) {
     const tr = document.createElement("tr");
-    const review = p.awaiting_review
-      ? `<span class="badge await">Awaiting review</span>`
-      : `<span class="badge ok">Reviewed</span>`;
     tr.innerHTML = `
       <td>
         <a class="pr-title" href="${escapeHtml(p.url)}" data-url="${escapeHtml(p.url)}">${escapeHtml(p.title)}</a>
@@ -200,7 +217,7 @@ function renderTable() {
       </td>
       <td class="repo-cell">${escapeHtml(p.repo)}</td>
       <td>${escapeHtml(p.author)}</td>
-      <td>${review}</td>
+      <td>${reviewBadge(p.review_status)}</td>
       <td class="age ${ageClass(p.created_at)}">${humanAge(p.created_at)}</td>
       <td class="age ${ageClass(p.updated_at)}">${humanAge(p.updated_at)}</td>`;
     prBody.appendChild(tr);
@@ -278,6 +295,27 @@ el("add-member-form").addEventListener("submit", (e) => {
   }
 });
 
+el("import-team-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const input = el("team-input");
+  const val = input.value.trim();
+  if (!val) return;
+  const btn = e.submitter;
+  btn.disabled = true;
+  btn.textContent = "…";
+  try {
+    members = await invoke("import_team", { teamSlug: val });
+    input.value = "";
+    renderMembers();
+    await refresh();
+  } catch (err) {
+    showBanner(String(err));
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Import";
+  }
+});
+
 prBody.addEventListener("click", (e) => {
   const link = e.target.closest("a.pr-title");
   if (link) {
@@ -295,7 +333,7 @@ el("settings-modal").addEventListener("click", (e) => {
 });
 
 el("filter-awaiting").addEventListener("change", (e) => {
-  awaitingOnly = e.target.checked;
+  needsAttentionOnly = e.target.checked;
   renderTable();
 });
 el("search-box").addEventListener("input", (e) => {
@@ -333,6 +371,10 @@ async function init() {
       openSettings();
     } else {
       await refresh();
+      // Auto-refresh every 5 minutes; skip if a manual refresh is in progress.
+      setInterval(() => {
+        if (!refreshBtn.disabled) refresh();
+      }, AUTO_REFRESH_MS);
     }
   } catch (e) {
     showBanner("Failed to start: " + String(e));

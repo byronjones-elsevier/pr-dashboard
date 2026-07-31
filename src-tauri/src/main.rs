@@ -13,15 +13,15 @@ use tauri::Manager;
 #[derive(Serialize, Deserialize, Clone, Default)]
 struct Settings {
     #[serde(default)]
-    base_url: String, // e.g. https://github.example.com  (API is derived from this)
+    base_url: String,
+    // Normally empty in config.json (token lives in the OS keychain).
+    // Written as plaintext fallback only when keychain is unavailable.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    token: String,
     #[serde(default)]
-    token: String, // GitHub Enterprise Personal Access Token
-    #[serde(default)]
-    members: Vec<String>, // GitHub usernames to track
+    members: Vec<String>,
 }
 
-/// What we send to the frontend when it asks for settings — the token is
-/// reported only as a boolean so it never has to live in the DOM.
 #[derive(Serialize)]
 struct SettingsView {
     base_url: String,
@@ -45,19 +45,86 @@ fn config_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join("config.json"))
 }
 
-fn read_settings(app: &tauri::AppHandle) -> Settings {
-    if let Ok(p) = config_path(app) {
-        if let Ok(s) = fs::read_to_string(p) {
-            if let Ok(cfg) = serde_json::from_str::<Settings>(&s) {
-                return cfg;
-            }
-        }
+// ---------------------------------------------------------------------------
+// Keychain helpers
+// ---------------------------------------------------------------------------
+
+const KEYRING_SERVICE: &str = "pr-dashboard";
+
+fn read_keyring_token(base_url: &str) -> Option<String> {
+    if base_url.is_empty() {
+        return None;
     }
-    Settings::default()
+    keyring::Entry::new(KEYRING_SERVICE, base_url)
+        .ok()
+        .and_then(|e| e.get_password().ok())
+        .filter(|t| !t.is_empty())
+}
+
+fn write_keyring_token(base_url: &str, token: &str) -> Result<(), String> {
+    if base_url.is_empty() {
+        return Err("Cannot save token: no base URL configured.".into());
+    }
+    keyring::Entry::new(KEYRING_SERVICE, base_url)
+        .map_err(|e| format!("Keychain error: {e}"))?
+        .set_password(token)
+        .map_err(|e| format!("Keychain write failed: {e}"))
+}
+
+fn delete_keyring_token(base_url: &str) {
+    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, base_url) {
+        let _ = entry.delete_credential();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Config persistence
+// ---------------------------------------------------------------------------
+
+fn read_settings(app: &tauri::AppHandle) -> Settings {
+    let mut s = if let Ok(p) = config_path(app) {
+        if let Ok(data) = fs::read_to_string(&p) {
+            serde_json::from_str::<Settings>(&data).unwrap_or_default()
+        } else {
+            Settings::default()
+        }
+    } else {
+        Settings::default()
+    };
+
+    // Keychain takes priority. If config.json has a plaintext fallback token,
+    // try to migrate it to keychain and clean up the config file.
+    if let Some(keychain_token) = read_keyring_token(&s.base_url) {
+        if !s.token.is_empty() {
+            // Keychain works and config has stale plaintext — clean it up.
+            s.token = String::new();
+            let _ = write_settings(app, &s);
+        }
+        s.token = keychain_token;
+        return s;
+    }
+
+    // Keychain unavailable or no entry yet. If config.json has a plaintext
+    // token (old format or fallback), try to migrate it to keychain now.
+    if !s.token.is_empty() && !s.base_url.is_empty() {
+        let plaintext_token = s.token.clone();
+        if write_keyring_token(&s.base_url, &plaintext_token).is_ok()
+            && read_keyring_token(&s.base_url).is_some()
+        {
+            // Migration confirmed: remove plaintext from config.
+            s.token = String::new();
+            let _ = write_settings(app, &s);
+            s.token = plaintext_token;
+        }
+        // Whether migration succeeded or not, s.token is set — return it.
+    }
+
+    s
 }
 
 fn write_settings(app: &tauri::AppHandle, s: &Settings) -> Result<(), String> {
     let p = config_path(app)?;
+    // token is skip_serializing so it never lands in config.json.
     let data = serde_json::to_string_pretty(s).map_err(|e| e.to_string())?;
     fs::write(p, data).map_err(|e| e.to_string())
 }
@@ -66,9 +133,6 @@ fn write_settings(app: &tauri::AppHandle, s: &Settings) -> Result<(), String> {
 // GitHub helpers
 // ---------------------------------------------------------------------------
 
-/// Derive the REST API base from a user-supplied host.
-/// - github.com          -> https://api.github.com
-/// - any Enterprise host -> https://<host>/api/v3
 fn api_base(base: &str) -> String {
     let b = base.trim().trim_end_matches('/');
     if b.is_empty() {
@@ -80,11 +144,9 @@ fn api_base(base: &str) -> String {
     if host_only == "github.com" || host_only == "www.github.com" || host_only == "api.github.com" {
         return "https://api.github.com".to_string();
     }
-    // If the user already pasted the API root, respect it.
     if b.ends_with("/api/v3") {
         return b.to_string();
     }
-    // Normalise: ensure a scheme.
     let with_scheme = if b.starts_with("http://") || b.starts_with("https://") {
         b.to_string()
     } else {
@@ -93,8 +155,33 @@ fn api_base(base: &str) -> String {
     format!("{}/api/v3", with_scheme)
 }
 
-/// Run a `search/issues` query, following pagination up to the search API's
-/// 1000-result ceiling. Returns the raw `items` JSON values.
+/// Extract a human-friendly error string from a GitHub API error response.
+fn github_error(status: reqwest::StatusCode, body: &str) -> String {
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
+        if let Some(msg) = v.get("message").and_then(|m| m.as_str()) {
+            if status.as_u16() == 403 {
+                let lower = msg.to_lowercase();
+                if lower.contains("rate limit") || lower.contains("secondary rate") {
+                    return format!(
+                        "GitHub rate limit reached — wait a minute then refresh. ({})",
+                        msg
+                    );
+                }
+            }
+            return format!("GitHub API error {status}: {msg}");
+        }
+    }
+    let snippet: String = body.chars().take(400).collect();
+    format!("GitHub API returned {status}: {snippet}")
+}
+
+fn github_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .build()
+        .map_err(|e| format!("Could not create HTTP client: {e}"))
+}
+
+/// Paginate `search/issues`. Returns raw `items` JSON values.
 async fn search_issues(
     client: &reqwest::Client,
     api: &str,
@@ -128,8 +215,7 @@ async fn search_issues(
             .map_err(|e| format!("Failed to read response: {e}"))?;
 
         if !status.is_success() {
-            let snippet: String = text.chars().take(400).collect();
-            return Err(format!("GitHub API returned {status}: {snippet}"));
+            return Err(github_error(status, &text));
         }
 
         let v: serde_json::Value =
@@ -150,6 +236,63 @@ async fn search_issues(
     Ok(out)
 }
 
+/// Paginate a list endpoint that returns a top-level JSON array (e.g. team members).
+async fn fetch_list(
+    client: &reqwest::Client,
+    api: &str,
+    token: &str,
+    path: &str,
+) -> Result<Vec<serde_json::Value>, String> {
+    let mut out: Vec<serde_json::Value> = Vec::new();
+    let mut page: u32 = 1;
+    loop {
+        let url = format!("{}/{}", api, path.trim_start_matches('/'));
+        let page_str = page.to_string();
+        let resp = client
+            .get(&url)
+            .query(&[("per_page", "100"), ("page", page_str.as_str())])
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "pr-dashboard")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .bearer_auth(token)
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {e}"))?;
+
+        let status = resp.status();
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| format!("Failed to read response: {e}"))?;
+
+        if !status.is_success() {
+            return Err(github_error(status, &text));
+        }
+
+        let items: Vec<serde_json::Value> =
+            serde_json::from_str(&text).map_err(|e| format!("Bad JSON from GitHub: {e}"))?;
+        let n = items.len();
+        out.extend(items);
+
+        if n < 100 {
+            break;
+        }
+        page += 1;
+    }
+    Ok(out)
+}
+
+fn url_set(items: &[serde_json::Value]) -> HashSet<String> {
+    items
+        .iter()
+        .filter_map(|i| {
+            i.get("html_url")
+                .and_then(|u| u.as_str())
+                .map(|x| x.to_string())
+        })
+        .collect()
+}
+
 #[derive(Serialize)]
 struct Pr {
     title: String,
@@ -159,7 +302,8 @@ struct Pr {
     url: String,
     created_at: String,
     updated_at: String,
-    awaiting_review: bool,
+    /// "awaiting" | "approved" | "changes_requested"
+    review_status: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -178,13 +322,31 @@ fn save_connection(
     token: String,
 ) -> Result<SettingsView, String> {
     let mut s = read_settings(&app);
+    let old_url = s.base_url.clone();
     s.base_url = base_url.trim().to_string();
-    // Empty token means "keep the existing one" so users can update the URL
-    // without re-pasting the PAT.
+
     if !token.trim().is_empty() {
         s.token = token.trim().to_string();
+        // Try keychain; fall back to plaintext in config.json if unavailable.
+        let keychain_ok = write_keyring_token(&s.base_url, &s.token).is_ok()
+            && read_keyring_token(&s.base_url).is_some();
+        if keychain_ok {
+            // Write config without the token (keychain holds it).
+            let tok = s.token.clone();
+            s.token = String::new();
+            write_settings(&app, &s)?;
+            s.token = tok;
+        } else {
+            // Keychain unavailable: store plaintext in config.json.
+            write_settings(&app, &s)?;
+        }
+        if old_url != s.base_url && !old_url.is_empty() {
+            delete_keyring_token(&old_url);
+        }
+    } else {
+        write_settings(&app, &s)?;
     }
-    write_settings(&app, &s)?;
+
     Ok(SettingsView::from(&s))
 }
 
@@ -200,11 +362,7 @@ fn add_member(app: tauri::AppHandle, login: String) -> Result<Vec<String>, Strin
         return Err("Username is empty.".into());
     }
     let mut s = read_settings(&app);
-    if !s
-        .members
-        .iter()
-        .any(|m| m.eq_ignore_ascii_case(&login))
-    {
+    if !s.members.iter().any(|m| m.eq_ignore_ascii_case(&login)) {
         s.members.push(login);
         s.members.sort_by_key(|m| m.to_lowercase());
         write_settings(&app, &s)?;
@@ -216,6 +374,54 @@ fn add_member(app: tauri::AppHandle, login: String) -> Result<Vec<String>, Strin
 fn remove_member(app: tauri::AppHandle, login: String) -> Result<Vec<String>, String> {
     let mut s = read_settings(&app);
     s.members.retain(|m| !m.eq_ignore_ascii_case(login.trim()));
+    write_settings(&app, &s)?;
+    Ok(s.members)
+}
+
+/// Import all members of a GitHub team into the tracked list.
+/// `team_slug` must be in `org/team-slug` format.
+#[tauri::command]
+async fn import_team(app: tauri::AppHandle, team_slug: String) -> Result<Vec<String>, String> {
+    let s = read_settings(&app);
+    if s.base_url.trim().is_empty() || s.token.trim().is_empty() {
+        return Err("Configure the GitHub host and token in Settings first.".into());
+    }
+    let api = api_base(&s.base_url);
+    if api.is_empty() {
+        return Err("The GitHub host looks invalid.".into());
+    }
+
+    let slug = team_slug.trim().trim_start_matches('/');
+    let parts: Vec<&str> = slug.splitn(2, '/').collect();
+    if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
+        return Err("Team slug must be in org/team-slug format.".into());
+    }
+    let (org, team) = (parts[0], parts[1]);
+
+    let client = github_client()?;
+    let path = format!("orgs/{}/teams/{}/members", org, team);
+    let items = fetch_list(&client, &api, &s.token, &path).await?;
+
+    let logins: Vec<String> = items
+        .iter()
+        .filter_map(|i| {
+            i.get("login")
+                .and_then(|l| l.as_str())
+                .map(|l| l.to_string())
+        })
+        .collect();
+
+    if logins.is_empty() {
+        return Err(format!("No members found in {}/{}.", org, team));
+    }
+
+    let mut s = read_settings(&app);
+    for login in &logins {
+        if !s.members.iter().any(|m| m.eq_ignore_ascii_case(login)) {
+            s.members.push(login.clone());
+        }
+    }
+    s.members.sort_by_key(|m| m.to_lowercase());
     write_settings(&app, &s)?;
     Ok(s.members)
 }
@@ -234,33 +440,34 @@ async fn fetch_prs(app: tauri::AppHandle) -> Result<Vec<Pr>, String> {
         return Ok(vec![]);
     }
 
-    let client = reqwest::Client::builder()
-        .build()
-        .map_err(|e| format!("Could not create HTTP client: {e}"))?;
-
-    // Deduplicate across members (a PR can be co-authored / show up twice).
+    let client = github_client()?;
     let mut by_url: HashMap<String, Pr> = HashMap::new();
 
     for member in &s.members {
-        let base_q = format!(
-            "is:pr is:open draft:false archived:false author:{}",
-            member
-        );
+        let base_q = format!("is:pr is:open draft:false archived:false author:{}", member);
 
-        // All open PRs authored by this member.
+        // Fetch all open PRs and both review-state subsets in parallel would
+        // exceed the search API's secondary rate limit; run them sequentially.
         let items = search_issues(&client, &api, &s.token, &base_q).await?;
 
-        // The subset that still requires a review (our "awaiting review" flag).
-        let await_q = format!("{} review:required", base_q);
-        let await_items = search_issues(&client, &api, &s.token, &await_q).await?;
-        let await_set: HashSet<String> = await_items
-            .iter()
-            .filter_map(|i| {
-                i.get("html_url")
-                    .and_then(|u| u.as_str())
-                    .map(|x| x.to_string())
-            })
-            .collect();
+        let changes_set = url_set(
+            &search_issues(
+                &client,
+                &api,
+                &s.token,
+                &format!("{} review:changes_requested", base_q),
+            )
+            .await?,
+        );
+        let approved_set = url_set(
+            &search_issues(
+                &client,
+                &api,
+                &s.token,
+                &format!("{} review:approved", base_q),
+            )
+            .await?,
+        );
 
         for it in items {
             let url = it
@@ -271,6 +478,16 @@ async fn fetch_prs(app: tauri::AppHandle) -> Result<Vec<Pr>, String> {
             if url.is_empty() {
                 continue;
             }
+
+            let review_status = if changes_set.contains(&url) {
+                "changes_requested"
+            } else if approved_set.contains(&url) {
+                "approved"
+            } else {
+                "awaiting"
+            }
+            .to_string();
+
             let repo = it
                 .get("repository_url")
                 .and_then(|u| u.as_str())
@@ -305,14 +522,13 @@ async fn fetch_prs(app: tauri::AppHandle) -> Result<Vec<Pr>, String> {
                     .and_then(|x| x.as_str())
                     .unwrap_or("")
                     .to_string(),
-                awaiting_review: await_set.contains(&url),
+                review_status,
             };
             by_url.insert(url, pr);
         }
     }
 
     let mut prs: Vec<Pr> = by_url.into_values().collect();
-    // Oldest first — the most stale PRs bubble to the top.
     prs.sort_by(|a, b| a.created_at.cmp(&b.created_at));
     Ok(prs)
 }
@@ -326,6 +542,7 @@ fn main() {
             get_members,
             add_member,
             remove_member,
+            import_team,
             fetch_prs
         ])
         .run(tauri::generate_context!())

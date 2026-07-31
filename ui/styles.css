@@ -144,6 +144,21 @@ body {
   flex: 1;
   min-width: 0;
 }
+.sidebar-divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+.sidebar-divider::before,
+.sidebar-divider::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid var(--border);
+}
+
 .member-list {
   list-style: none;
   margin: 0;
@@ -329,15 +344,20 @@ input[type="password"]:focus {
   font-weight: 600;
   white-space: nowrap;
 }
-.badge.await {
+.badge.awaiting {
   background: rgba(210, 153, 34, 0.15);
   color: var(--amber);
   border: 1px solid rgba(210, 153, 34, 0.4);
 }
-.badge.ok {
+.badge.approved {
   background: rgba(63, 185, 80, 0.12);
   color: var(--green);
   border: 1px solid rgba(63, 185, 80, 0.35);
+}
+.badge.changes {
+  background: rgba(248, 81, 73, 0.12);
+  color: var(--red);
+  border: 1px solid rgba(248, 81, 73, 0.4);
 }
 .age {
   white-space: nowrap;

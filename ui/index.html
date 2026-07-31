@@ -23,6 +23,7 @@
       <!-- Sidebar: team members -->
       <aside class="sidebar">
         <h2>Team</h2>
+
         <form id="add-member-form" class="add-row">
           <input
             id="member-input"
@@ -33,6 +34,22 @@
           />
           <button type="submit" class="btn small">Add</button>
         </form>
+
+        <div class="sidebar-divider">
+          <span>or import a team</span>
+        </div>
+
+        <form id="import-team-form" class="add-row">
+          <input
+            id="team-input"
+            type="text"
+            placeholder="org/team-slug"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <button type="submit" class="btn small">Import</button>
+        </form>
+
         <ul id="member-list" class="member-list"></ul>
         <p id="member-empty" class="muted small">
           No members yet. Add a GitHub username above to start tracking their
@@ -46,7 +63,7 @@
           <div class="filters">
             <label class="chk">
               <input type="checkbox" id="filter-awaiting" />
-              Awaiting review only
+              Needs attention
             </label>
             <input
               id="search-box"
@@ -67,7 +84,7 @@
                 <th data-sort="title">PR</th>
                 <th data-sort="repo">Repository</th>
                 <th data-sort="author">Author</th>
-                <th data-sort="awaiting_review">Review</th>
+                <th data-sort="review_status">Review</th>
                 <th data-sort="created_at" class="sorted-asc">Age</th>
                 <th data-sort="updated_at">Last activity</th>
               </tr>
@@ -105,8 +122,8 @@
             spellcheck="false"
           />
           <small class="muted"
-            >Needs <code>repo</code> scope. Stored locally in this app's config
-            folder.</small
+            >Needs <code>repo</code> scope. Stored securely in the OS
+            keychain.</small
           >
         </label>
         <div class="modal-actions">

@@ -121,23 +121,21 @@ VERY_STALE_DAYS=21).
 - **Icons are generated placeholders** (a simple merge-graph motif). Replace via
   `npm run tauri icon assets/icon.png` before distributing.
 
-## TODO / next steps (rough priority)
+## TODO / next steps
 
-1. ~~`cargo check` / `npm run dev` and fix any compile errors.~~ ✓ Done
-2. ~~Confirm end-to-end against the real GHE host.~~ ✓ Done
-3. **Optional — keychain storage** for the PAT: add the `keyring` crate, store
-   the token there instead of in `config.json` (keep `base_url`/`members` in
-   JSON). The user explicitly asked to be offered this.
-4. **Optional — richer review state:** distinguish "changes requested" vs "no
-   review yet" vs "approved". Cleanest via the GraphQL API `reviewDecision`
-   field, or per-PR `GET /repos/{owner}/{repo}/pulls/{n}/reviews`.
-5. **Optional — auto-refresh** on an interval, and a per-member "last synced"
-   indicator.
-6. **Optional — rate-limit handling:** surface `X-RateLimit-Remaining` and back
-   off / show a friendly message on 403 secondary-rate-limit responses. Right
-   now a non-200 is shown verbatim in the banner.
-7. **Optional — team presets / import** (e.g. seed from a GitHub team slug via
-   `GET /orgs/{org}/teams/{team}/members`).
+All original items are done. ✓
+
+### Possible future work
+
+- **Richer review state per PR**: the three-state model (awaiting / approved /
+  changes_requested) is based on Search API qualifiers. A more precise signal
+  would be `reviewDecision` from the GraphQL API or per-PR REST reviews.
+- **Per-member "last synced" timestamp**: show when each member's PRs were last
+  fetched individually.
+- **Keychain on signed builds**: keychain storage is implemented and falls back
+  to plaintext config.json when keychain is unavailable (e.g. unsigned dev
+  binaries). Once the app is code-signed for distribution, the keychain path
+  will activate automatically.
 
 ## Build & run
 
