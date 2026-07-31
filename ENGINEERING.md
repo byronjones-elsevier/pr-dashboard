@@ -101,17 +101,18 @@ VERY_STALE_DAYS=21).
   its own. `main.js` intercepts `.pr-title` clicks and calls
   `invoke("plugin:opener|open_url", { url })`.
 
-## ⚠️ Not yet verified / risks
+## Verified (2026-07-31)
 
-- **The Rust has NOT been compiled** — it was written without a Rust toolchain
-  available. Do `cd src-tauri && cargo check` (or `npm run dev`) first thing.
-  One type error was already caught and fixed (query params must be uniform
-  `(&str, &str)` — see the `page_str` binding in `search_issues`). Watch for
-  more.
-- **`invoke("plugin:opener|open_url", { url })` arg name** — verify the opener
-  plugin's command arg is `url` (not `path`). If links don't open, check the
-  console and the plugin's command signature. The default permission set
-  (`opener:default`) already allows `https://`.
+- **Rust compiles clean** — upgraded toolchain from 1.87.0 → 1.97.1 (deps
+  required ≥1.88); `cargo check` and `npm run dev` both pass with 0 errors.
+- **End-to-end confirmed** against the real GHE host: 11 open PRs loaded for
+  `byronjones-elsevier`, review badges, age, and last-activity columns all
+  rendering correctly.
+- **`invoke("plugin:opener|open_url", { url })` arg is correct** — confirmed
+  against `tauri-plugin-opener-2.5.4/src/init-iife.js`; the plugin uses `url`.
+
+## Remaining risks / notes
+
 - **Window label** — `tauri.conf.json` defines one window without an explicit
   `label`; Tauri defaults it to `main`, which the capability targets. If the
   capability ever fails to apply, set `"label": "main"` explicitly.
@@ -122,9 +123,8 @@ VERY_STALE_DAYS=21).
 
 ## TODO / next steps (rough priority)
 
-1. `cargo check` / `npm run dev` and fix any compile errors.
-2. Confirm end-to-end against the real GHE host: settings save → add member →
-   PRs load → links open.
+1. ~~`cargo check` / `npm run dev` and fix any compile errors.~~ ✓ Done
+2. ~~Confirm end-to-end against the real GHE host.~~ ✓ Done
 3. **Optional — keychain storage** for the PAT: add the `keyring` crate, store
    the token there instead of in `config.json` (keep `base_url`/`members` in
    JSON). The user explicitly asked to be offered this.
