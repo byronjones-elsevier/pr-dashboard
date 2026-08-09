@@ -255,6 +255,47 @@ fn github_client() -> Result<reqwest::Client, String> {
         .map_err(|e| format!("Could not create HTTP client: {e}"))
 }
 
+/// True if `resp` is a 403 caused by the *primary* core rate limit being
+/// fully exhausted (remaining=0 with a reset time) — as opposed to a
+/// permissions error or a secondary/abuse-detection limit, neither of which
+/// carry a reliable reset time to wait out.
+fn is_core_rate_limited(resp: &reqwest::Response) -> Option<u64> {
+    if resp.status().as_u16() != 403 {
+        return None;
+    }
+    let remaining: i64 = resp
+        .headers()
+        .get("x-ratelimit-remaining")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(-1);
+    let reset: i64 = resp
+        .headers()
+        .get("x-ratelimit-reset")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    if remaining == 0 && reset > 0 {
+        Some(((reset - unix_now()) + 2).max(1) as u64)
+    } else {
+        None
+    }
+}
+
+/// Sends the request built by `build`, and if the core rate limit was hit,
+/// sleeps until the window resets and retries exactly once — mirroring the
+/// search-quota pacing in fetch_prs, but for every other (core-API) command.
+async fn send_with_core_backoff(
+    build: impl Fn() -> reqwest::RequestBuilder,
+) -> Result<reqwest::Response, String> {
+    let resp = build().send().await.map_err(|e| format!("Request failed: {e}"))?;
+    if let Some(wait_secs) = is_core_rate_limited(&resp) {
+        tokio::time::sleep(tokio::time::Duration::from_secs(wait_secs)).await;
+        return build().send().await.map_err(|e| format!("Request failed: {e}"));
+    }
+    Ok(resp)
+}
+
 fn unix_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -347,16 +388,16 @@ async fn fetch_list(
     loop {
         let url = format!("{}/{}", api, path.trim_start_matches('/'));
         let page_str = page.to_string();
-        let resp = client
-            .get(&url)
-            .query(&[("per_page", "100"), ("page", page_str.as_str())])
-            .header("Accept", "application/vnd.github+json")
-            .header("User-Agent", "pr-dashboard")
-            .header("X-GitHub-Api-Version", "2022-11-28")
-            .bearer_auth(token)
-            .send()
-            .await
-            .map_err(|e| format!("Request failed: {e}"))?;
+        let resp = send_with_core_backoff(|| {
+            client
+                .get(&url)
+                .query(&[("per_page", "100"), ("page", page_str.as_str())])
+                .header("Accept", "application/vnd.github+json")
+                .header("User-Agent", "pr-dashboard")
+                .header("X-GitHub-Api-Version", "2022-11-28")
+                .bearer_auth(token)
+        })
+        .await?;
 
         let status = resp.status();
         let text = resp
@@ -392,13 +433,19 @@ fn url_set(items: &[serde_json::Value]) -> HashSet<String> {
         .collect()
 }
 
-/// Snapshot of the GitHub Search API rate-limit window.
+/// Snapshot of both GitHub rate-limit windows that this app consumes: the
+/// Search API (30/min, used by fetch_prs) and the core API (5000/hr, used by
+/// every other endpoint — team imports, approve/close/delete-branch).
 #[derive(Serialize, Clone)]
 struct RateLimitStatus {
     search_remaining: i64,
     search_limit: i64,
     /// Unix timestamp when the current window resets.
     search_reset: i64,
+    core_remaining: i64,
+    core_limit: i64,
+    /// Unix timestamp when the current window resets.
+    core_reset: i64,
 }
 
 #[derive(Serialize)]
@@ -425,6 +472,9 @@ async fn fetch_rate_limit(
     let search = body
         .pointer("/resources/search")
         .ok_or("Missing search resource in rate_limit response")?;
+    let core = body
+        .pointer("/resources/core")
+        .ok_or("Missing core resource in rate_limit response")?;
     Ok(RateLimitStatus {
         search_remaining: search
             .get("remaining")
@@ -432,6 +482,9 @@ async fn fetch_rate_limit(
             .unwrap_or(0),
         search_limit: search.get("limit").and_then(|v| v.as_i64()).unwrap_or(30),
         search_reset: search.get("reset").and_then(|v| v.as_i64()).unwrap_or(0),
+        core_remaining: core.get("remaining").and_then(|v| v.as_i64()).unwrap_or(0),
+        core_limit: core.get("limit").and_then(|v| v.as_i64()).unwrap_or(5000),
+        core_reset: core.get("reset").and_then(|v| v.as_i64()).unwrap_or(0),
     })
 }
 
@@ -766,15 +819,15 @@ async fn approve_pr(
     let client = github_client()?;
     let url = format!("{}/repos/{}/pulls/{}/reviews", api, owner_repo, pr_number);
     let body = serde_json::json!({ "body": comment, "event": "APPROVE" });
-    let resp = client
-        .post(&url)
-        .header("Authorization", format!("Bearer {}", s.token))
-        .header("Accept", "application/vnd.github+json")
-        .header("User-Agent", "pr-dashboard")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
+    let resp = send_with_core_backoff(|| {
+        client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", s.token))
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "pr-dashboard")
+            .json(&body)
+    })
+    .await?;
     if resp.status().is_success() {
         Ok(())
     } else {
@@ -798,15 +851,15 @@ async fn close_pr(
     let client = github_client()?;
     let url = format!("{}/repos/{}/pulls/{}", api, owner_repo, pr_number);
     let body = serde_json::json!({ "state": "closed" });
-    let resp = client
-        .patch(&url)
-        .header("Authorization", format!("Bearer {}", s.token))
-        .header("Accept", "application/vnd.github+json")
-        .header("User-Agent", "pr-dashboard")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
+    let resp = send_with_core_backoff(|| {
+        client
+            .patch(&url)
+            .header("Authorization", format!("Bearer {}", s.token))
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "pr-dashboard")
+            .json(&body)
+    })
+    .await?;
     if resp.status().is_success() {
         Ok(())
     } else {
@@ -830,14 +883,14 @@ async fn close_pr_and_delete_branch(
     let client = github_client()?;
 
     let pr_url = format!("{}/repos/{}/pulls/{}", api, owner_repo, pr_number);
-    let pr_resp = client
-        .get(&pr_url)
-        .header("Authorization", format!("Bearer {}", s.token))
-        .header("Accept", "application/vnd.github+json")
-        .header("User-Agent", "pr-dashboard")
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
+    let pr_resp = send_with_core_backoff(|| {
+        client
+            .get(&pr_url)
+            .header("Authorization", format!("Bearer {}", s.token))
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "pr-dashboard")
+    })
+    .await?;
     if !pr_resp.status().is_success() {
         let status = pr_resp.status();
         let text = pr_resp.text().await.unwrap_or_default();
@@ -852,15 +905,15 @@ async fn close_pr_and_delete_branch(
         .to_string();
 
     let close_body = serde_json::json!({ "state": "closed" });
-    let close_resp = client
-        .patch(&pr_url)
-        .header("Authorization", format!("Bearer {}", s.token))
-        .header("Accept", "application/vnd.github+json")
-        .header("User-Agent", "pr-dashboard")
-        .json(&close_body)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
+    let close_resp = send_with_core_backoff(|| {
+        client
+            .patch(&pr_url)
+            .header("Authorization", format!("Bearer {}", s.token))
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "pr-dashboard")
+            .json(&close_body)
+    })
+    .await?;
     if !close_resp.status().is_success() {
         let status = close_resp.status();
         let text = close_resp.text().await.unwrap_or_default();
@@ -868,14 +921,14 @@ async fn close_pr_and_delete_branch(
     }
 
     let ref_url = format!("{}/repos/{}/git/refs/heads/{}", api, owner_repo, head_ref);
-    let del_resp = client
-        .delete(&ref_url)
-        .header("Authorization", format!("Bearer {}", s.token))
-        .header("Accept", "application/vnd.github+json")
-        .header("User-Agent", "pr-dashboard")
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
+    let del_resp = send_with_core_backoff(|| {
+        client
+            .delete(&ref_url)
+            .header("Authorization", format!("Bearer {}", s.token))
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "pr-dashboard")
+    })
+    .await?;
     if del_resp.status().is_success() || del_resp.status().as_u16() == 204 {
         Ok(())
     } else {

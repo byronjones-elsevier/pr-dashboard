@@ -47,6 +47,7 @@ const summary = el("summary");
 const lastRefresh = el("last-refresh");
 const refreshBtn = el("refresh-btn");
 const rateLimitBadge = el("rate-limit-badge");
+const coreRateLimitBadge = el("core-rate-limit-badge");
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -148,6 +149,34 @@ function updateRateLimitBadge(rl) {
     : low
     ? "Rate limit low — auto-refresh may be skipped."
     : "GitHub Search API quota";
+}
+
+// Core API (5000/hr) backs every non-search call: team imports, approve/
+// close/delete-branch. Thresholds are flat (not team-size-scaled like
+// search's) since a single action only ever costs a handful of calls.
+function updateCoreRateLimitBadge(rl) {
+  if (!rl) {
+    coreRateLimitBadge.classList.add("hidden");
+    return;
+  }
+  const { core_remaining, core_limit, core_reset } = rl;
+  const low = core_remaining < 100;
+  const critical = core_remaining < 10;
+
+  let cls = "rate-limit-badge";
+  if (critical) cls += " critical";
+  else if (low) cls += " low";
+
+  const now = Math.floor(Date.now() / 1000);
+  const resetIn = Math.max(0, core_reset - now);
+  const resetStr = resetIn > 0 ? ` · resets in ${Math.ceil(resetIn / 60)}m` : "";
+  coreRateLimitBadge.className = cls;
+  coreRateLimitBadge.textContent = `Core API ${core_remaining}/${core_limit}${resetStr}`;
+  coreRateLimitBadge.title = critical
+    ? "Core rate limit critical — actions (approve/close/import) will pause and retry automatically."
+    : low
+    ? "Core rate limit low."
+    : "GitHub core API quota (team imports, approve/close/delete-branch)";
 }
 
 // ---------------------------------------------------------------------------
@@ -603,6 +632,7 @@ async function refresh() {
     prs = result.prs;
     lastRateLimit = result.rate_limit;
     updateRateLimitBadge(lastRateLimit);
+    updateCoreRateLimitBadge(lastRateLimit);
     lastRefresh.textContent = `Updated ${new Date().toLocaleTimeString()}`;
   } catch (e) {
     showBanner(String(e));
