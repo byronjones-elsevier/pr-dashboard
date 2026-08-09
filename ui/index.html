@@ -13,6 +13,7 @@
         <h1>Team PR Dashboard</h1>
       </div>
       <div class="topbar-actions">
+        <button id="sidebar-toggle-btn" class="btn ghost" title="Show/hide filter sidebar">☰</button>
         <span id="rate-limit-badge" class="rate-limit-badge hidden"></span>
         <span id="last-refresh" class="muted"></span>
         <button id="refresh-btn" class="btn primary">Refresh</button>
@@ -20,7 +21,7 @@
       </div>
     </header>
 
-    <main class="layout">
+    <main class="layout" id="layout">
       <!-- Sidebar: filter PRs by user/group -->
       <aside class="sidebar" id="sidebar">
         <h2>Filter</h2>

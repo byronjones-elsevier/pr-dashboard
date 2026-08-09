@@ -11,8 +11,12 @@ your team, across your whole GitHub Enterprise instance.
   requested", or "Approved" based on three GitHub Search API qualifiers.
 - **Age & staleness** — sorted oldest-first; ≥ 7 days is amber, ≥ 21 days is
   red. A "Last activity" column shows time since last update.
-- **In-app team management** — add/remove GitHub usernames in the sidebar, or
-  import an entire team with `org/team-slug`. Each member shows their PR count.
+- **In-app team management** — add/remove individual GitHub usernames and
+  persisted groups (`org/team-slug`, imports the team's current roster) from
+  the Settings dialog.
+- **Sidebar filter** — a collapsible sidebar (toggle with the ☰ button) lists
+  every tracked user/group with checkboxes; checking one or more narrows the
+  PR list to just their PRs, unchecking everything shows all of them again.
 - **Filter & sort** — "Needs attention" toggle (hides approved PRs), free-text
   filter by title/repo/author, and click any column header to sort.
 - **PR actions** — each row has four icon buttons:
@@ -59,8 +63,8 @@ On first launch a **Settings** dialog opens. Enter:
   Personal access tokens_ on your GitHub host.
 - **Auto-refresh interval** — minutes between automatic refreshes (minimum 1).
 
-Then add team members by GitHub username in the sidebar (or import a whole team
-with `org/team-slug`) and hit **Refresh**.
+Then open **Settings** (⚙︎) to add team members by GitHub username, or add a
+whole group with `org/team-slug`, and hit **Refresh**.
 
 ## Build distributable installers
 

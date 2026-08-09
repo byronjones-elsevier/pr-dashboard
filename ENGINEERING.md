@@ -1,7 +1,7 @@
 # ENGINEERING.md — handover notes
 
 Handover for continuing the **Team PR Dashboard** in a Claude Code / terminal
-session. Last updated 2026-07-31.
+session. Last updated 2026-08-08.
 
 ## What this is
 
@@ -11,8 +11,11 @@ by a user-managed team, across a GitHub **Enterprise** instance.
 - **Form factor:** Tauri desktop app (Rust backend + system WebView).
 - **Scope:** enterprise-/org-wide open PRs by any team member, in any repo the
   token can see. Drafts excluded.
-- **Team list:** add/remove GitHub usernames in-app, or import by `org/team-slug`.
-  Persisted to a local config file.
+- **Team list:** add/remove individual GitHub usernames, or add/remove a
+  persisted group backed by `org/team-slug` (imports the team's current
+  roster). Managed from the Settings dialog; persisted to a local config file.
+- **Sidebar filter:** collapsible sidebar lists every tracked user/group as a
+  checkbox; checking one or more narrows the PR list to their PRs.
 - **Auth:** GitHub Enterprise base URL + Personal Access Token, entered in-app.
   Stored in OS keychain; plaintext config.json fallback for unsigned builds.
 
@@ -60,12 +63,14 @@ camelCase args to Rust snake_case.
 
 | Command | Args (JS) | Returns | Notes |
 |---|---|---|---|
-| `get_settings` | – | `SettingsView` | `{ base_url, has_token, members, refresh_interval_mins }` — token never sent to UI |
+| `get_settings` | – | `SettingsView` | Token never sent to UI |
 | `save_connection` | `{ baseUrl, token, refreshIntervalMins? }` | `SettingsView` | Empty `token` keeps the saved one; `refreshIntervalMins` min 1 |
-| `get_members` | – | `string[]` | |
-| `add_member` | `{ login }` | `string[]` | Strips `@`, case-insensitive dedupe, sorted |
-| `remove_member` | `{ login }` | `string[]` | |
-| `import_team` | `{ teamSlug }` | `string[]` | Slug must be `org/team-slug`; merges into member list |
+| `get_members` | – | `string[]` | Effective (deduped union of individual + group) members |
+| `add_member` | `{ login }` | `SettingsView` | Strips `@`, case-insensitive dedupe, sorted |
+| `remove_member` | `{ login }` | `SettingsView` | Only removes from the individual list |
+| `add_group` | `{ teamSlug }` | `SettingsView` | Slug must be `org/team-slug`; imports/refreshes that group's roster |
+| `remove_group` | `{ slug }` | `SettingsView` | Untracks the group's members unless tracked elsewhere |
+| `save_ui_prefs` | `{ sidebarVisible, viewMode }` | `SettingsView` | Persists sidebar visibility + list/card view choice |
 | `fetch_prs` | – | `FetchResult` | See below |
 | `approve_pr` | `{ ownerRepo, prNumber, comment }` | `()` | POSTs APPROVE review |
 | `close_pr` | `{ ownerRepo, prNumber }` | `()` | PATCHes state=closed |
@@ -74,7 +79,10 @@ camelCase args to Rust snake_case.
 ### Types
 
 ```
-SettingsView = { base_url: string, has_token: bool, members: string[], refresh_interval_mins: u32 }
+Group = { slug: string, members: string[] }   // slug is "org/team-slug"
+
+SettingsView = { base_url: string, has_token: bool, members: string[], groups: Group[],
+                  refresh_interval_mins: u32, sidebar_visible: bool, view_mode: "list" | "card" }
 
 Pr = { title, number, repo, author, url, created_at, updated_at,
        review_status: "awaiting" | "approved" | "changes_requested" }
@@ -83,6 +91,12 @@ RateLimitStatus = { search_remaining: i64, search_limit: i64, search_reset: i64 
 
 FetchResult = { prs: Pr[], rate_limit: RateLimitStatus }
 ```
+
+`effective_members()` (Rust) / `effectiveLogins()` (JS) compute the same
+case-insensitive-deduped union of individual `members` and every group's
+roster — this is the set `fetch_prs` actually queries. The sidebar's
+select/deselect filter is purely client-side: `filterSelection` holds
+`"user:<login>"` / `"group:<slug>"` keys; empty selection means no filter.
 
 ### How PRs are fetched
 
@@ -139,6 +153,16 @@ quota, not search) to return current state to the UI.
   rate-limit pacing across multiple windows working correctly.
 - PR action buttons tested (approve modal, review link, close confirmations).
 - Incremental DOM update confirmed: rows update in place on refresh.
+
+## Verified (2026-08-08)
+
+- Settings dialog Groups/Individual users CRUD confirmed against real GHE data
+  (64 open PRs, 13 tracked users).
+- Sidebar select/deselect filter confirmed: checking a user narrows the table
+  to their PRs; unchecking restores the full list.
+- Sidebar show/hide toggle confirmed both directions, including the
+  `sidebar-collapsed` single-column grid fallback and that the choice persists
+  across app restarts via `save_ui_prefs`.
 
 ## Remaining risks / notes
 

@@ -19,6 +19,11 @@ let searchText = "";
 let lastRateLimit = null; // RateLimitStatus from last fetch_prs call
 let autoRefreshMs = 10 * 60 * 1000; // updated from settings on load
 let autoRefreshTimer = null;
+let sidebarVisible = true;
+let viewMode = "list"; // "list" | "card"
+// Selected filter keys: "user:<login>" or "group:<slug>" (lowercased).
+// Empty = no filter applied (show every tracked PR).
+let filterSelection = new Set();
 
 const STALE_DAYS = 7;
 const VERY_STALE_DAYS = 21;
@@ -243,30 +248,36 @@ function renderTeamSettingsLists() {
   }
 }
 
-// Read-only informational list in the sidebar. Selection/filtering lands
-// in a follow-up feature; today it just mirrors what's tracked.
+// Sidebar checkboxes: checking a user/group narrows the PR list to their
+// PRs (see selectedLogins()). Unchecking everything shows all PRs again.
 function renderSidebarFilter() {
   filterList.innerHTML = "";
-  const logins = effectiveLogins();
   filterEmpty.classList.toggle("hidden", groups.length > 0 || members.length > 0);
 
-  for (const g of groups) {
+  const addRow = (key, name, count) => {
     const li = document.createElement("li");
-    const count = g.members.reduce((sum, m) => sum + prCountFor(m), 0);
+    const checked = filterSelection.has(key) ? "checked" : "";
     li.innerHTML = `
-      <span class="name">${escapeHtml(g.slug)}</span>
-      <span class="count">${count} PR${count === 1 ? "" : "s"}</span>`;
+      <label class="filter-row">
+        <input type="checkbox" data-key="${escapeHtml(key)}" ${checked} />
+        <span class="name">${escapeHtml(name)}</span>
+        <span class="count">${count} PR${count === 1 ? "" : "s"}</span>
+      </label>`;
+    li.querySelector("input").addEventListener("change", (e) => {
+      if (e.target.checked) filterSelection.add(key);
+      else filterSelection.delete(key);
+      renderTable();
+    });
     filterList.appendChild(li);
+  };
+
+  for (const g of groups) {
+    const count = g.members.reduce((sum, m) => sum + prCountFor(m), 0);
+    addRow(`group:${g.slug.toLowerCase()}`, g.slug, count);
   }
   for (const m of members) {
-    const li = document.createElement("li");
-    const count = prCountFor(m);
-    li.innerHTML = `
-      <span class="name">${escapeHtml(m)}</span>
-      <span class="count">${count} PR${count === 1 ? "" : "s"}</span>`;
-    filterList.appendChild(li);
+    addRow(`user:${m.toLowerCase()}`, m, prCountFor(m));
   }
-  void logins; // reserved for the upcoming select/deselect filter
 }
 
 async function addMember(login) {
@@ -302,11 +313,33 @@ async function removeGroup(slug) {
   }
 }
 
+// Expands the sidebar filter selection (users + groups) into the set of
+// logins it resolves to. Returns null when nothing is selected, meaning
+// "no filter" rather than "match nobody".
+function selectedLogins() {
+  if (filterSelection.size === 0) return null;
+  const out = new Set();
+  for (const m of members) {
+    if (filterSelection.has(`user:${m.toLowerCase()}`)) out.add(m.toLowerCase());
+  }
+  for (const g of groups) {
+    if (filterSelection.has(`group:${g.slug.toLowerCase()}`)) {
+      for (const m of g.members) out.add(m.toLowerCase());
+    }
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // PR table
 // ---------------------------------------------------------------------------
 function sortedFilteredPrs() {
   let list = prs.slice();
+
+  const logins = selectedLogins();
+  if (logins) {
+    list = list.filter((p) => logins.has(p.author.toLowerCase()));
+  }
 
   // "Needs attention" = awaiting review or changes have been requested.
   if (needsAttentionOnly) {
@@ -622,6 +655,20 @@ prBody.addEventListener("click", (e) => {
   }
 });
 
+function applySidebarVisibility() {
+  el("layout").classList.toggle("sidebar-collapsed", !sidebarVisible);
+}
+
+el("sidebar-toggle-btn").addEventListener("click", async () => {
+  sidebarVisible = !sidebarVisible;
+  applySidebarVisibility();
+  try {
+    window.__cfg = await invoke("save_ui_prefs", { sidebarVisible, viewMode });
+  } catch (e) {
+    showBanner(String(e));
+  }
+});
+
 el("refresh-btn").addEventListener("click", refresh);
 el("settings-btn").addEventListener("click", openSettings);
 el("settings-cancel").addEventListener("click", closeSettings);
@@ -679,6 +726,9 @@ async function init() {
     window.__cfg = await invoke("get_settings");
     members = window.__cfg.members || [];
     groups = window.__cfg.groups || [];
+    sidebarVisible = window.__cfg.sidebar_visible ?? true;
+    viewMode = window.__cfg.view_mode || "list";
+    applySidebarVisibility();
     renderTeamSettingsLists();
     renderSidebarFilter();
     renderTable();
