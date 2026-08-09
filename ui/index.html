@@ -8,12 +8,19 @@
   </head>
   <body>
     <header class="topbar">
-      <div class="brand">
-        <span class="dot"></span>
-        <h1>Team PR Dashboard</h1>
+      <div class="topbar-left">
+        <button id="sidebar-toggle-btn" class="btn ghost sidebar-toggle" title="Show/hide filter sidebar">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/>
+            <line x1="6" y1="2.5" x2="6" y2="13.5"/>
+          </svg>
+        </button>
+        <div class="brand">
+          <span class="dot"></span>
+          <h1>Team PR Dashboard</h1>
+        </div>
       </div>
       <div class="topbar-actions">
-        <button id="sidebar-toggle-btn" class="btn ghost" title="Show/hide filter sidebar">☰</button>
         <span id="rate-limit-badge" class="rate-limit-badge hidden"></span>
         <span id="last-refresh" class="muted"></span>
         <button id="refresh-btn" class="btn primary">Refresh</button>
@@ -81,6 +88,11 @@
 
         <div class="card-wrap hidden" id="card-view">
           <div class="card-grid" id="card-grid"></div>
+        </div>
+
+        <div id="loading-overlay" class="loading-overlay hidden">
+          <div class="spinner"></div>
+          <p>Loading pull requests…</p>
         </div>
 
         <div id="empty-state" class="empty hidden"></div>

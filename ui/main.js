@@ -39,6 +39,7 @@ const cardGrid = el("card-grid");
 const listView = el("list-view");
 const cardView = el("card-view");
 const emptyState = el("empty-state");
+const loadingOverlay = el("loading-overlay");
 const banner = el("status-banner");
 const summary = el("summary");
 const lastRefresh = el("last-refresh");
@@ -570,6 +571,19 @@ function scheduleNextRefresh() {
   }, autoRefreshMs);
 }
 
+// Shown only while there's nothing on screen yet to reconcile against —
+// i.e. the very first fetch, or any refresh starting from an empty table.
+// Subsequent refreshes keep showing the existing rows (see renderTable()'s
+// incremental reconciliation) rather than blanking out to a spinner.
+function setLoading(flag) {
+  loadingOverlay.classList.toggle("hidden", !flag);
+  if (flag) {
+    listView.classList.add("hidden");
+    cardView.classList.add("hidden");
+    emptyState.classList.add("hidden");
+  }
+}
+
 async function refresh() {
   if (effectiveLogins().length === 0) {
     prs = [];
@@ -577,6 +591,8 @@ async function refresh() {
     renderSidebarFilter();
     return;
   }
+  const showingLoader = prs.length === 0;
+  if (showingLoader) setLoading(true);
   refreshBtn.disabled = true;
   refreshBtn.textContent = "Loading…";
   clearBanner();
@@ -586,11 +602,15 @@ async function refresh() {
     lastRateLimit = result.rate_limit;
     updateRateLimitBadge(lastRateLimit);
     lastRefresh.textContent = `Updated ${new Date().toLocaleTimeString()}`;
-    renderTable();
-    renderSidebarFilter();
   } catch (e) {
     showBanner(String(e));
   } finally {
+    if (showingLoader) {
+      setLoading(false);
+      applyViewMode();
+    }
+    renderTable();
+    renderSidebarFilter();
     refreshBtn.disabled = false;
     refreshBtn.textContent = "Refresh";
   }

@@ -19,6 +19,10 @@ by a user-managed team, across a GitHub **Enterprise** instance.
 - **List/Card view:** a toolbar toggle switches between the table and a
   responsive card grid; both are kept reconciled in the DOM simultaneously
   (see `renderTable()`) so switching is instant with no re-fetch.
+- **Loading overlay:** `setLoading()` shows a spinner in place of the
+  list/card views only when `prs.length === 0` going into a `fetch_prs` call
+  (initial boot, or any refresh starting from empty) — subsequent refreshes
+  keep the existing rows visible via the incremental reconciliation instead.
 - **Auth:** GitHub Enterprise base URL + Personal Access Token, entered in-app.
   Stored in OS keychain; plaintext config.json fallback for unsigned builds.
 
@@ -174,6 +178,10 @@ quota, not search) to return current state to the UI.
 - List/Card view toggle confirmed: card grid renders 3 columns at 1280px width
   and collapses to 1 column at 760px with no code change (pure CSS grid
   reflow); switching views is instant since both DOM trees stay reconciled.
+- Loading spinner confirmed showing during the initial fetch window (caught
+  via a polling screenshot loop) and clearing correctly once data arrives.
+  Sidebar-toggle button relocated to the top-left (directly above the
+  sidebar) with a proper panel-style SVG icon per user feedback.
 
 ## Remaining risks / notes
 

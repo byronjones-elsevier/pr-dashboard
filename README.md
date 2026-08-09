@@ -34,6 +34,9 @@ your team, across your whole GitHub Enterprise instance.
   teams spread automatically across multiple 1-minute windows.
 - **Incremental rendering** — on refresh, only rows whose data has changed are
   updated. Unchanged rows are not touched; scroll position is preserved.
+- **Loading animation** — a spinner shows while the very first batch of PRs is
+  being fetched (app boot, or any refresh starting from an empty table).
+  Later refreshes keep showing existing rows instead of blanking to a spinner.
 
 ## Prerequisites
 
