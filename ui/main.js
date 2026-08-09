@@ -9,7 +9,8 @@ function openExternal(url) {
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
-let members = [];
+let members = []; // individually-added users
+let groups = []; // [{ slug, members: [...] }] persisted GitHub teams
 let prs = [];
 let sortKey = "created_at";
 let sortDir = "asc"; // asc = oldest first
@@ -18,6 +19,13 @@ let searchText = "";
 let lastRateLimit = null; // RateLimitStatus from last fetch_prs call
 let autoRefreshMs = 10 * 60 * 1000; // updated from settings on load
 let autoRefreshTimer = null;
+let sidebarVisible = true;
+let viewMode = "list"; // "list" | "card"
+let theme = "system"; // "light" | "dark" | "system"
+let systemThemeMedia = null;
+// Selected filter keys: "user:<login>" or "group:<slug>" (lowercased).
+// Empty = no filter applied (show every tracked PR).
+let filterSelection = new Set();
 
 const STALE_DAYS = 7;
 const VERY_STALE_DAYS = 21;
@@ -26,10 +34,14 @@ const VERY_STALE_DAYS = 21;
 // Element refs
 // ---------------------------------------------------------------------------
 const el = (id) => document.getElementById(id);
-const memberList = el("member-list");
-const memberEmpty = el("member-empty");
+const filterList = el("filter-list");
+const filterEmpty = el("filter-empty");
 const prBody = el("pr-body");
+const cardGrid = el("card-grid");
+const listView = el("list-view");
+const cardView = el("card-view");
 const emptyState = el("empty-state");
+const loadingOverlay = el("loading-overlay");
 const banner = el("status-banner");
 const summary = el("summary");
 const lastRefresh = el("last-refresh");
@@ -39,6 +51,20 @@ const rateLimitBadge = el("rate-limit-badge");
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+// Union of individually-added members and every group's roster, deduped
+// case-insensitively. Mirrors effective_members() on the Rust side.
+function effectiveLogins() {
+  const seen = new Map();
+  for (const m of members) seen.set(m.toLowerCase(), m);
+  for (const g of groups) {
+    for (const m of g.members) {
+      if (!seen.has(m.toLowerCase())) seen.set(m.toLowerCase(), m);
+    }
+  }
+  return Array.from(seen.values());
+}
+
 function daysSince(iso) {
   if (!iso) return null;
   const then = new Date(iso).getTime();
@@ -103,7 +129,7 @@ function updateRateLimitBadge(rl) {
     return;
   }
   const { search_remaining, search_limit, search_reset } = rl;
-  const needed = members.length * 3;
+  const needed = effectiveLogins().length * 3;
   const pct = search_limit > 0 ? search_remaining / search_limit : 1;
   const low = search_remaining < Math.max(needed * 2, 6); // < 2 refreshes left
   const critical = search_remaining < needed;             // < 1 refresh left
@@ -185,34 +211,84 @@ function closeConfirmModal() {
 }
 
 // ---------------------------------------------------------------------------
-// Members
+// Team management (Settings dialog) + sidebar filter list
 // ---------------------------------------------------------------------------
 function prCountFor(login) {
   return prs.filter((p) => p.author.toLowerCase() === login.toLowerCase())
     .length;
 }
 
-function renderMembers() {
-  memberList.innerHTML = "";
-  memberEmpty.classList.toggle("hidden", members.length > 0);
+function applyTeamUpdate(view) {
+  members = view.members || [];
+  groups = view.groups || [];
+  renderTeamSettingsLists();
+  renderSidebarFilter();
+}
+
+function renderTeamSettingsLists() {
+  const groupList = el("settings-group-list");
+  const groupEmpty = el("settings-group-empty");
+  groupList.innerHTML = "";
+  groupEmpty.classList.toggle("hidden", groups.length > 0);
+  for (const g of groups) {
+    const li = document.createElement("li");
+    li.innerHTML = `
+      <span class="name">${escapeHtml(g.slug)}</span>
+      <span class="count">${g.members.length} member${g.members.length === 1 ? "" : "s"}</span>
+      <button class="remove-x" title="Remove ${escapeHtml(g.slug)}">✕</button>`;
+    li.querySelector(".remove-x").addEventListener("click", () => removeGroup(g.slug));
+    groupList.appendChild(li);
+  }
+
+  const memberListEl = el("settings-member-list");
+  const memberEmptyEl = el("settings-member-empty");
+  memberListEl.innerHTML = "";
+  memberEmptyEl.classList.toggle("hidden", members.length > 0);
   for (const m of members) {
     const li = document.createElement("li");
-    const count = prCountFor(m);
     li.innerHTML = `
       <span class="name">${escapeHtml(m)}</span>
-      <span class="count">${count} PR${count === 1 ? "" : "s"}</span>
       <button class="remove-x" title="Remove ${escapeHtml(m)}">✕</button>`;
-    li.querySelector(".remove-x").addEventListener("click", () =>
-      removeMember(m)
-    );
-    memberList.appendChild(li);
+    li.querySelector(".remove-x").addEventListener("click", () => removeMember(m));
+    memberListEl.appendChild(li);
+  }
+}
+
+// Sidebar checkboxes: checking a user/group narrows the PR list to their
+// PRs (see selectedLogins()). Unchecking everything shows all PRs again.
+function renderSidebarFilter() {
+  filterList.innerHTML = "";
+  filterEmpty.classList.toggle("hidden", groups.length > 0 || members.length > 0);
+
+  const addRow = (key, name, count) => {
+    const li = document.createElement("li");
+    const checked = filterSelection.has(key) ? "checked" : "";
+    li.innerHTML = `
+      <label class="filter-row">
+        <input type="checkbox" data-key="${escapeHtml(key)}" ${checked} />
+        <span class="name">${escapeHtml(name)}</span>
+        <span class="count">${count} PR${count === 1 ? "" : "s"}</span>
+      </label>`;
+    li.querySelector("input").addEventListener("change", (e) => {
+      if (e.target.checked) filterSelection.add(key);
+      else filterSelection.delete(key);
+      renderTable();
+    });
+    filterList.appendChild(li);
+  };
+
+  for (const g of groups) {
+    const count = g.members.reduce((sum, m) => sum + prCountFor(m), 0);
+    addRow(`group:${g.slug.toLowerCase()}`, g.slug, count);
+  }
+  for (const m of members) {
+    addRow(`user:${m.toLowerCase()}`, m, prCountFor(m));
   }
 }
 
 async function addMember(login) {
   try {
-    members = await invoke("add_member", { login });
-    renderMembers();
+    applyTeamUpdate(await invoke("add_member", { login }));
     await refresh();
   } catch (e) {
     showBanner(String(e));
@@ -221,13 +297,43 @@ async function addMember(login) {
 
 async function removeMember(login) {
   try {
-    members = await invoke("remove_member", { login });
+    applyTeamUpdate(await invoke("remove_member", { login }));
     prs = prs.filter((p) => p.author.toLowerCase() !== login.toLowerCase());
-    renderMembers();
     renderTable();
   } catch (e) {
     showBanner(String(e));
   }
+}
+
+async function addGroup(teamSlug) {
+  applyTeamUpdate(await invoke("add_group", { teamSlug }));
+  await refresh();
+}
+
+async function removeGroup(slug) {
+  try {
+    applyTeamUpdate(await invoke("remove_group", { slug }));
+    await refresh();
+  } catch (e) {
+    showBanner(String(e));
+  }
+}
+
+// Expands the sidebar filter selection (users + groups) into the set of
+// logins it resolves to. Returns null when nothing is selected, meaning
+// "no filter" rather than "match nobody".
+function selectedLogins() {
+  if (filterSelection.size === 0) return null;
+  const out = new Set();
+  for (const m of members) {
+    if (filterSelection.has(`user:${m.toLowerCase()}`)) out.add(m.toLowerCase());
+  }
+  for (const g of groups) {
+    if (filterSelection.has(`group:${g.slug.toLowerCase()}`)) {
+      for (const m of g.members) out.add(m.toLowerCase());
+    }
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -235,6 +341,11 @@ async function removeMember(login) {
 // ---------------------------------------------------------------------------
 function sortedFilteredPrs() {
   let list = prs.slice();
+
+  const logins = selectedLogins();
+  if (logins) {
+    list = list.filter((p) => logins.has(p.author.toLowerCase()));
+  }
 
   // "Needs attention" = awaiting review or changes have been requested.
   if (needsAttentionOnly) {
@@ -319,6 +430,93 @@ function syncPrRow(tr, p) {
   tr._snap = p;
 }
 
+// Build the innerHTML for a single PR card (card view).
+function prCardHtml(p) {
+  const filesUrl = escapeHtml(p.url + "/files");
+  return `
+    <div class="card-head">
+      <a class="pr-title" href="${escapeHtml(p.url)}" data-url="${escapeHtml(p.url)}">${escapeHtml(p.title)}</a>
+      <span class="pr-num">#${p.number}</span>
+    </div>
+    <div class="card-repo repo-cell">${escapeHtml(p.repo)}</div>
+    <div class="card-meta">
+      <span class="card-author">${escapeHtml(p.author)}</span>
+      ${reviewBadge(p.review_status)}
+    </div>
+    <div class="card-ages">
+      <span class="age ${ageClass(p.created_at)}">Opened ${humanAge(p.created_at)} ago</span>
+      <span class="age ${ageClass(p.updated_at)}">Active ${humanAge(p.updated_at)} ago</span>
+    </div>
+    <div class="card-actions">
+      <button class="action-btn approve"
+        data-action="approve" data-repo="${escapeHtml(p.repo)}"
+        data-num="${p.number}" data-title="${escapeHtml(p.title)}"
+        title="Approve with comment">${ICON_APPROVE}</button>
+      <button class="action-btn open-review"
+        data-action="review" data-url="${filesUrl}"
+        title="Open for review (files tab)">${ICON_EYE}</button>
+      <button class="action-btn close-pr"
+        data-action="close" data-repo="${escapeHtml(p.repo)}"
+        data-num="${p.number}" data-title="${escapeHtml(p.title)}"
+        title="Close PR">${ICON_CLOSE}</button>
+      <button class="action-btn delete-branch"
+        data-action="delete-branch" data-repo="${escapeHtml(p.repo)}"
+        data-num="${p.number}" data-title="${escapeHtml(p.title)}"
+        title="Close PR and delete branch">${ICON_TRASH}</button>
+    </div>`;
+}
+
+function makePrCard(p) {
+  const div = document.createElement("div");
+  div.className = "pr-card";
+  div.dataset.prUrl = p.url;
+  div.innerHTML = prCardHtml(p);
+  div._snap = p;
+  return div;
+}
+
+function syncPrCard(div, p) {
+  const s = div._snap;
+  if (
+    s &&
+    s.title === p.title &&
+    s.review_status === p.review_status &&
+    s.created_at === p.created_at &&
+    s.updated_at === p.updated_at
+  )
+    return;
+  div.innerHTML = prCardHtml(p);
+  div._snap = p;
+}
+
+// Keyed reconciliation shared by the table body and the card grid: moves,
+// updates, or inserts children by PR URL without wiping unaffected ones.
+function reconcileKeyed(container, list, makeFn, syncFn) {
+  const old = new Map(
+    Array.from(container.children)
+      .filter((node) => node.dataset.prUrl)
+      .map((node) => [node.dataset.prUrl, node])
+  );
+  const seen = new Set();
+
+  for (let i = 0; i < list.length; i++) {
+    const p = list[i];
+    let node = old.get(p.url);
+    if (node) {
+      syncFn(node, p);
+      seen.add(p.url);
+    } else {
+      node = makeFn(p);
+    }
+    const atI = container.children[i];
+    if (atI !== node) container.insertBefore(node, atI || null);
+  }
+
+  for (const [url, node] of old) {
+    if (!seen.has(url)) node.remove();
+  }
+}
+
 function renderTable() {
   const list = sortedFilteredPrs();
 
@@ -326,7 +524,8 @@ function renderTable() {
   const awaiting = prs.filter((p) => p.review_status === "awaiting").length;
   const changes = prs.filter((p) => p.review_status === "changes_requested").length;
   const approved = prs.filter((p) => p.review_status === "approved").length;
-  if (members.length) {
+  const trackedCount = effectiveLogins().length;
+  if (trackedCount) {
     const parts = [`${prs.length} open PR${prs.length === 1 ? "" : "s"}`];
     if (awaiting) parts.push(`${awaiting} awaiting`);
     if (changes) parts.push(`${changes} changes requested`);
@@ -337,10 +536,10 @@ function renderTable() {
   }
 
   // Empty-state messaging (don't return early — fall through to reconcile).
-  if (members.length === 0) {
+  if (trackedCount === 0) {
     emptyState.classList.remove("hidden");
     emptyState.textContent =
-      "Add team members in the sidebar to see their open pull requests.";
+      "Add users or groups in Settings to see their open pull requests.";
   } else if (list.length === 0) {
     emptyState.classList.remove("hidden");
     emptyState.textContent = prs.length
@@ -350,33 +549,10 @@ function renderTable() {
     emptyState.classList.add("hidden");
   }
 
-  // Keyed reconciliation: move/update/add rows without wiping the table.
-  // Rows whose data hasn't changed are left completely untouched.
-  const oldRows = new Map(
-    Array.from(prBody.rows)
-      .filter((tr) => tr.dataset.prUrl)
-      .map((tr) => [tr.dataset.prUrl, tr])
-  );
-  const seen = new Set();
-
-  for (let i = 0; i < list.length; i++) {
-    const p = list[i];
-    let tr = oldRows.get(p.url);
-    if (tr) {
-      syncPrRow(tr, p);
-      seen.add(p.url);
-    } else {
-      tr = makePrRow(p);
-    }
-    // Place tr at position i without disturbing other rows unnecessarily.
-    const atI = prBody.rows[i];
-    if (atI !== tr) prBody.insertBefore(tr, atI || null);
-  }
-
-  // Remove rows for PRs that have been closed or filtered out.
-  for (const [url, tr] of oldRows) {
-    if (!seen.has(url)) tr.remove();
-  }
+  // Keep both the table body and the card grid reconciled regardless of
+  // which one is currently visible, so switching views is instant.
+  reconcileKeyed(prBody, list, makePrRow, syncPrRow);
+  reconcileKeyed(cardGrid, list, makePrCard, syncPrCard);
 }
 
 // ---------------------------------------------------------------------------
@@ -388,22 +564,37 @@ function renderTable() {
 function scheduleNextRefresh() {
   clearTimeout(autoRefreshTimer);
   autoRefreshTimer = setTimeout(async () => {
-    const needed = members.length * 3;
+    const needed = effectiveLogins().length * 3;
     const rateLimitOk = !lastRateLimit || lastRateLimit.search_remaining >= needed;
-    if (!refreshBtn.disabled && members.length > 0 && rateLimitOk) {
+    if (!refreshBtn.disabled && effectiveLogins().length > 0 && rateLimitOk) {
       await refresh();
     }
     scheduleNextRefresh();
   }, autoRefreshMs);
 }
 
+// Shown only while there's nothing on screen yet to reconcile against —
+// i.e. the very first fetch, or any refresh starting from an empty table.
+// Subsequent refreshes keep showing the existing rows (see renderTable()'s
+// incremental reconciliation) rather than blanking out to a spinner.
+function setLoading(flag) {
+  loadingOverlay.classList.toggle("hidden", !flag);
+  if (flag) {
+    listView.classList.add("hidden");
+    cardView.classList.add("hidden");
+    emptyState.classList.add("hidden");
+  }
+}
+
 async function refresh() {
-  if (members.length === 0) {
+  if (effectiveLogins().length === 0) {
     prs = [];
     renderTable();
-    renderMembers();
+    renderSidebarFilter();
     return;
   }
+  const showingLoader = prs.length === 0;
+  if (showingLoader) setLoading(true);
   refreshBtn.disabled = true;
   refreshBtn.textContent = "Loading…";
   clearBanner();
@@ -413,11 +604,15 @@ async function refresh() {
     lastRateLimit = result.rate_limit;
     updateRateLimitBadge(lastRateLimit);
     lastRefresh.textContent = `Updated ${new Date().toLocaleTimeString()}`;
-    renderTable();
-    renderMembers();
   } catch (e) {
     showBanner(String(e));
   } finally {
+    if (showingLoader) {
+      setLoading(false);
+      applyViewMode();
+    }
+    renderTable();
+    renderSidebarFilter();
     refreshBtn.disabled = false;
     refreshBtn.textContent = "Refresh";
   }
@@ -426,6 +621,15 @@ async function refresh() {
 // ---------------------------------------------------------------------------
 // Settings modal
 // ---------------------------------------------------------------------------
+function switchSettingsCategory(category) {
+  document.querySelectorAll(".settings-nav-btn").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.category === category);
+  });
+  document.querySelectorAll(".settings-panel").forEach((panel) => {
+    panel.classList.toggle("hidden", panel.dataset.panel !== category);
+  });
+}
+
 function openSettings() {
   el("base-url").value = window.__cfg?.base_url || "";
   el("token").value = "";
@@ -433,6 +637,7 @@ function openSettings() {
     ? "•••••••• (leave blank to keep saved token)"
     : "ghp_…";
   el("refresh-mins").value = window.__cfg?.refresh_interval_mins ?? 10;
+  switchSettingsCategory("connections");
   el("settings-modal").classList.remove("hidden");
 }
 function closeSettings() {
@@ -480,28 +685,28 @@ el("add-member-form").addEventListener("submit", (e) => {
   }
 });
 
-el("import-team-form").addEventListener("submit", async (e) => {
+el("add-group-form").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const input = el("team-input");
+  const input = el("group-input");
   const val = input.value.trim();
   if (!val) return;
   const btn = e.submitter;
   btn.disabled = true;
   btn.textContent = "…";
   try {
-    members = await invoke("import_team", { teamSlug: val });
+    await addGroup(val);
     input.value = "";
-    renderMembers();
-    await refresh();
   } catch (err) {
     showBanner(String(err));
   } finally {
     btn.disabled = false;
-    btn.textContent = "Import";
+    btn.textContent = "Add group";
   }
 });
 
-prBody.addEventListener("click", (e) => {
+// Shared by the table body and the card grid — both use the same
+// data-action buttons and .pr-title links.
+function handlePrContainerClick(e) {
   const link = e.target.closest("a.pr-title");
   if (link) {
     e.preventDefault();
@@ -549,6 +754,80 @@ prBody.addEventListener("click", (e) => {
       }
     );
   }
+}
+prBody.addEventListener("click", handlePrContainerClick);
+cardGrid.addEventListener("click", handlePrContainerClick);
+
+function applySidebarVisibility() {
+  el("layout").classList.toggle("sidebar-collapsed", !sidebarVisible);
+}
+
+function applyViewMode() {
+  listView.classList.toggle("hidden", viewMode !== "list");
+  cardView.classList.toggle("hidden", viewMode !== "card");
+  el("view-list-btn").classList.toggle("active", viewMode === "list");
+  el("view-card-btn").classList.toggle("active", viewMode === "card");
+}
+
+// "system" resolves live via matchMedia; "light"/"dark" are fixed choices.
+function resolveTheme() {
+  if (theme === "light" || theme === "dark") return theme;
+  return systemThemeMedia && systemThemeMedia.matches ? "dark" : "light";
+}
+
+function applyTheme() {
+  document.documentElement.setAttribute("data-theme", resolveTheme());
+  ["light", "dark", "system"].forEach((choice) => {
+    el(`theme-${choice}-btn`).classList.toggle("active", theme === choice);
+  });
+}
+
+// Wired once at boot: when the OS theme changes and the user's preference is
+// "system", follow it live without needing a restart.
+function initThemeWatcher() {
+  systemThemeMedia = window.matchMedia("(prefers-color-scheme: dark)");
+  systemThemeMedia.addEventListener("change", () => {
+    if (theme === "system") applyTheme();
+  });
+}
+
+async function saveUiPrefs() {
+  try {
+    window.__cfg = await invoke("save_ui_prefs", { sidebarVisible, viewMode, theme });
+  } catch (e) {
+    showBanner(String(e));
+  }
+}
+
+async function setViewMode(mode) {
+  if (viewMode === mode) return;
+  viewMode = mode;
+  applyViewMode();
+  await saveUiPrefs();
+}
+
+async function setTheme(next) {
+  if (theme === next) return;
+  theme = next;
+  applyTheme();
+  await saveUiPrefs();
+}
+
+el("sidebar-toggle-btn").addEventListener("click", async () => {
+  sidebarVisible = !sidebarVisible;
+  applySidebarVisibility();
+  await saveUiPrefs();
+});
+
+document.querySelectorAll("button[data-theme-choice]").forEach((btn) => {
+  btn.addEventListener("click", () => setTheme(btn.dataset.themeChoice));
+});
+
+el("view-list-btn").addEventListener("click", () => setViewMode("list"));
+el("view-card-btn").addEventListener("click", () => setViewMode("card"));
+
+document.querySelectorAll(".settings-nav-btn").forEach((btn) => {
+  btn.addEventListener("click", () => switchSettingsCategory(btn.dataset.category));
 });
 
 el("refresh-btn").addEventListener("click", refresh);
@@ -607,7 +886,15 @@ async function init() {
   try {
     window.__cfg = await invoke("get_settings");
     members = window.__cfg.members || [];
-    renderMembers();
+    groups = window.__cfg.groups || [];
+    sidebarVisible = window.__cfg.sidebar_visible ?? true;
+    viewMode = window.__cfg.view_mode || "list";
+    theme = window.__cfg.theme || "system";
+    applySidebarVisibility();
+    applyViewMode();
+    applyTheme();
+    renderTeamSettingsLists();
+    renderSidebarFilter();
     renderTable();
     autoRefreshMs = (window.__cfg.refresh_interval_mins ?? 10) * 60 * 1000;
 
@@ -621,5 +908,10 @@ async function init() {
     showBanner("Failed to start: " + String(e));
   }
 }
+
+// Apply a theme immediately (before settings load) to avoid a flash of the
+// wrong theme on boot; init() re-applies once the persisted choice is known.
+initThemeWatcher();
+applyTheme();
 
 init();

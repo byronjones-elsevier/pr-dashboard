@@ -1,7 +1,7 @@
 # ENGINEERING.md — handover notes
 
 Handover for continuing the **Team PR Dashboard** in a Claude Code / terminal
-session. Last updated 2026-07-31.
+session. Last updated 2026-08-08.
 
 ## What this is
 
@@ -11,8 +11,18 @@ by a user-managed team, across a GitHub **Enterprise** instance.
 - **Form factor:** Tauri desktop app (Rust backend + system WebView).
 - **Scope:** enterprise-/org-wide open PRs by any team member, in any repo the
   token can see. Drafts excluded.
-- **Team list:** add/remove GitHub usernames in-app, or import by `org/team-slug`.
-  Persisted to a local config file.
+- **Team list:** add/remove individual GitHub usernames, or add/remove a
+  persisted group backed by `org/team-slug` (imports the team's current
+  roster). Managed from the Settings dialog; persisted to a local config file.
+- **Sidebar filter:** collapsible sidebar lists every tracked user/group as a
+  checkbox; checking one or more narrows the PR list to their PRs.
+- **List/Card view:** a toolbar toggle switches between the table and a
+  responsive card grid; both are kept reconciled in the DOM simultaneously
+  (see `renderTable()`) so switching is instant with no re-fetch.
+- **Loading overlay:** `setLoading()` shows a spinner in place of the
+  list/card views only when `prs.length === 0` going into a `fetch_prs` call
+  (initial boot, or any refresh starting from empty) — subsequent refreshes
+  keep the existing rows visible via the incremental reconciliation instead.
 - **Auth:** GitHub Enterprise base URL + Personal Access Token, entered in-app.
   Stored in OS keychain; plaintext config.json fallback for unsigned builds.
 
@@ -39,7 +49,7 @@ pr-dashboard/
 ├── ENGINEERING.md                   # this file
 ├── AGENTS.md                        # AI agent guidance
 ├── CLAUDE.md                        # repo guide for Claude Code
-├── .github/workflows/build.yml      # CI: builds all 5 targets; releases on v* tags
+├── .github/workflows/build.yml      # CI: builds all 4 targets; releases on v* tags
 ├── ui/                              # frontend (frontendDist target)
 │   ├── index.html
 │   ├── styles.css
@@ -60,12 +70,14 @@ camelCase args to Rust snake_case.
 
 | Command | Args (JS) | Returns | Notes |
 |---|---|---|---|
-| `get_settings` | – | `SettingsView` | `{ base_url, has_token, members, refresh_interval_mins }` — token never sent to UI |
+| `get_settings` | – | `SettingsView` | Token never sent to UI |
 | `save_connection` | `{ baseUrl, token, refreshIntervalMins? }` | `SettingsView` | Empty `token` keeps the saved one; `refreshIntervalMins` min 1 |
-| `get_members` | – | `string[]` | |
-| `add_member` | `{ login }` | `string[]` | Strips `@`, case-insensitive dedupe, sorted |
-| `remove_member` | `{ login }` | `string[]` | |
-| `import_team` | `{ teamSlug }` | `string[]` | Slug must be `org/team-slug`; merges into member list |
+| `get_members` | – | `string[]` | Effective (deduped union of individual + group) members |
+| `add_member` | `{ login }` | `SettingsView` | Strips `@`, case-insensitive dedupe, sorted |
+| `remove_member` | `{ login }` | `SettingsView` | Only removes from the individual list |
+| `add_group` | `{ teamSlug }` | `SettingsView` | Slug must be `org/team-slug`; imports/refreshes that group's roster |
+| `remove_group` | `{ slug }` | `SettingsView` | Untracks the group's members unless tracked elsewhere |
+| `save_ui_prefs` | `{ sidebarVisible, viewMode, theme }` | `SettingsView` | Persists sidebar visibility, list/card view, and theme choice |
 | `fetch_prs` | – | `FetchResult` | See below |
 | `approve_pr` | `{ ownerRepo, prNumber, comment }` | `()` | POSTs APPROVE review |
 | `close_pr` | `{ ownerRepo, prNumber }` | `()` | PATCHes state=closed |
@@ -74,7 +86,11 @@ camelCase args to Rust snake_case.
 ### Types
 
 ```
-SettingsView = { base_url: string, has_token: bool, members: string[], refresh_interval_mins: u32 }
+Group = { slug: string, members: string[] }   // slug is "org/team-slug"
+
+SettingsView = { base_url: string, has_token: bool, members: string[], groups: Group[],
+                  refresh_interval_mins: u32, sidebar_visible: bool, view_mode: "list" | "card",
+                  theme: "light" | "dark" | "system" }
 
 Pr = { title, number, repo, author, url, created_at, updated_at,
        review_status: "awaiting" | "approved" | "changes_requested" }
@@ -83,6 +99,12 @@ RateLimitStatus = { search_remaining: i64, search_limit: i64, search_reset: i64 
 
 FetchResult = { prs: Pr[], rate_limit: RateLimitStatus }
 ```
+
+`effective_members()` (Rust) / `effectiveLogins()` (JS) compute the same
+case-insensitive-deduped union of individual `members` and every group's
+roster — this is the set `fetch_prs` actually queries. The sidebar's
+select/deselect filter is purely client-side: `filterSelection` holds
+`"user:<login>"` / `"group:<slug>"` keys; empty selection means no filter.
 
 ### How PRs are fetched
 
@@ -127,10 +149,30 @@ quota, not search) to return current state to the UI.
 - **Recursive `setTimeout` for auto-refresh** — `setInterval` fires at a fixed
   wall-clock cadence regardless of how long the fetch takes. The recursive
   approach starts the countdown only after the previous fetch fully resolves.
-- **Keyed DOM reconciliation** — `renderTable()` maintains a `Map<url, tr>` of
-  live rows. On refresh: unchanged rows are skipped entirely, changed rows are
-  updated in place, new rows are inserted, and gone rows are removed. Scroll
-  position is preserved.
+- **Keyed DOM reconciliation** — `renderTable()` uses a shared `reconcileKeyed()`
+  helper (keyed by PR URL) for both the table body and the card grid. On
+  refresh: unchanged nodes are skipped entirely, changed ones updated in
+  place, new ones inserted, gone ones removed. Scroll position is preserved
+  in whichever view is visible.
+- **Card grid is CSS-only responsive** — `grid-template-columns: repeat(auto-fill,
+  minmax(300px, 1fr))` reflows column count purely from container width; no
+  resize listener needed. `overflow-y: auto` on `.card-wrap` gives automatic
+  scrollbars.
+- **Theme via `data-theme` attribute, not a class toggle** — `applyTheme()`
+  sets `document.documentElement.setAttribute("data-theme", resolveTheme())`;
+  CSS overrides live under `:root[data-theme="light"]`. "system" is resolved
+  live against `matchMedia("(prefers-color-scheme: dark)")`, with a listener
+  registered once at boot (`initThemeWatcher()`) so OS changes apply without
+  a restart — but the *stored* preference stays `"system"` rather than being
+  overwritten with whatever it last resolved to.
+- **Settings dialog is category-paned, not one long form** — mirrors macOS
+  System Settings: a `.settings-nav` list on the left toggles which
+  `.settings-panel` is visible on the right (`switchSettingsCategory()`).
+  Categories: Connections, Users and Groups, Appearance.
+- **`PRDASH_DEV_MAX_MEMBERS` dev-only env var** — `fetch_prs` truncates the
+  effective-members list to the first N (alphabetical) when set, to avoid
+  burning through the real GitHub rate limit while iterating locally. Never
+  touches persisted settings; absent in normal use.
 
 ## Verified (2026-07-31)
 
@@ -139,6 +181,29 @@ quota, not search) to return current state to the UI.
   rate-limit pacing across multiple windows working correctly.
 - PR action buttons tested (approve modal, review link, close confirmations).
 - Incremental DOM update confirmed: rows update in place on refresh.
+
+## Verified (2026-08-08)
+
+- Settings dialog Groups/Individual users CRUD confirmed against real GHE data
+  (64 open PRs, 13 tracked users).
+- Sidebar select/deselect filter confirmed: checking a user narrows the table
+  to their PRs; unchecking restores the full list.
+- Sidebar show/hide toggle confirmed both directions, including the
+  `sidebar-collapsed` single-column grid fallback and that the choice persists
+  across app restarts via `save_ui_prefs`.
+- Categorized Settings dialog confirmed: all 3 categories switch correctly,
+  light theme renders cleanly across the whole app (main window + modal).
+  Theme toggle confirmed both ways (System → Dark → System), including live
+  re-resolution against the OS setting.
+- `PRDASH_DEV_MAX_MEMBERS=2` confirmed against real GHE data: only the first
+  2 (alphabetical) of 13 tracked members were queried (8 PRs vs. the full 64).
+- List/Card view toggle confirmed: card grid renders 3 columns at 1280px width
+  and collapses to 1 column at 760px with no code change (pure CSS grid
+  reflow); switching views is instant since both DOM trees stay reconciled.
+- Loading spinner confirmed showing during the initial fetch window (caught
+  via a polling screenshot loop) and clearing correctly once data arrives.
+  Sidebar-toggle button relocated to the top-left (directly above the
+  sidebar) with a proper panel-style SVG icon per user feedback.
 
 ## Remaining risks / notes
 
@@ -177,3 +242,28 @@ make help                      # show all Makefile targets
 
 Prereqs: Rust stable ≥ 1.88, Node 18+, Tauri OS deps
 (https://tauri.app/start/prerequisites/).
+
+### Cross-platform builds (local + CI)
+
+Four targets: Windows x64, macOS ARM64, macOS x64, Linux x64 (Windows ARM64
+was dropped from the Makefile/CI/rustup-targets — not part of the current
+target list; previously present under `build-windows-arm`).
+
+- `make build-<target>` runs `tauri build --target <triple>`, then stages the
+  raw executable **and** the full `bundle/` tree (installers) into
+  `dist/<target>/` via the internal `stage` target — one predictable output
+  location with both deliverables. `make build-all` chains all four; the
+  Windows/Linux legs only succeed when run on that native OS, since Tauri's
+  installer bundlers (WiX/NSIS, dpkg/AppImage) require the matching platform.
+- CI (`.github/workflows/build.yml`) runs one job per target on the matching
+  native GitHub-hosted runner (macos-14, macos-13, windows-latest,
+  ubuntu-latest — no cross-compilation containers). Each job now also renames
+  the raw binary to `pr-dashboard-<target>[.exe]` before
+  `upload-artifact` — every target's raw binary is otherwise named identically
+  (`pr-dashboard`/`pr-dashboard.exe`), and the `release` job downloads with
+  `merge-multiple: true`, which flattens all artifacts into one directory and
+  would silently clobber same-named files across platforms without the rename.
+- `help`'s target-listing regex was `[a-zA-Z_-]+` (no digits) — this silently
+  dropped every target with a digit in its name (`build-macos-x64`,
+  `build-linux-x64`, etc.) from `make help` output. Fixed to
+  `[a-zA-Z0-9_-]+`. Pre-existing bug, unrelated to the Windows ARM64 removal.

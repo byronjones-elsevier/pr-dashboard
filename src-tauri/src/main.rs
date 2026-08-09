@@ -14,6 +14,28 @@ fn default_refresh_mins() -> u32 {
     10
 }
 
+fn default_true() -> bool {
+    true
+}
+
+fn default_view_mode() -> String {
+    "list".to_string()
+}
+
+fn default_theme() -> String {
+    "system".to_string()
+}
+
+/// A persisted GitHub team: `slug` is "org/team-slug", `members` is the
+/// team's roster as of the last import/refresh.
+#[derive(Serialize, Deserialize, Clone, Default)]
+struct Group {
+    #[serde(default)]
+    slug: String,
+    #[serde(default)]
+    members: Vec<String>,
+}
+
 #[derive(Serialize, Deserialize, Clone, Default)]
 struct Settings {
     #[serde(default)]
@@ -22,10 +44,34 @@ struct Settings {
     // Written as plaintext fallback only when keychain is unavailable.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     token: String,
+    // Individually-added users (not sourced from an imported team).
     #[serde(default)]
     members: Vec<String>,
+    #[serde(default)]
+    groups: Vec<Group>,
     #[serde(default = "default_refresh_mins")]
     refresh_interval_mins: u32,
+    #[serde(default = "default_true")]
+    sidebar_visible: bool,
+    #[serde(default = "default_view_mode")]
+    view_mode: String,
+    #[serde(default = "default_theme")]
+    theme: String,
+}
+
+/// Union of individually-added members and every group's roster, deduped
+/// case-insensitively. This is the set of logins fetch_prs actually queries.
+fn effective_members(s: &Settings) -> Vec<String> {
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut out = Vec::new();
+    for login in s.members.iter().chain(s.groups.iter().flat_map(|g| g.members.iter())) {
+        let key = login.to_lowercase();
+        if seen.insert(key) {
+            out.push(login.clone());
+        }
+    }
+    out.sort_by_key(|m| m.to_lowercase());
+    out
 }
 
 #[derive(Serialize)]
@@ -33,7 +79,11 @@ struct SettingsView {
     base_url: String,
     has_token: bool,
     members: Vec<String>,
+    groups: Vec<Group>,
     refresh_interval_mins: u32,
+    sidebar_visible: bool,
+    view_mode: String,
+    theme: String,
 }
 
 impl From<&Settings> for SettingsView {
@@ -42,10 +92,22 @@ impl From<&Settings> for SettingsView {
             base_url: s.base_url.clone(),
             has_token: !s.token.trim().is_empty(),
             members: s.members.clone(),
+            groups: s.groups.clone(),
             refresh_interval_mins: if s.refresh_interval_mins == 0 {
                 default_refresh_mins()
             } else {
                 s.refresh_interval_mins
+            },
+            sidebar_visible: s.sidebar_visible,
+            view_mode: if s.view_mode.is_empty() {
+                default_view_mode()
+            } else {
+                s.view_mode.clone()
+            },
+            theme: if s.theme.is_empty() {
+                default_theme()
+            } else {
+                s.theme.clone()
             },
         }
     }
@@ -436,11 +498,11 @@ fn save_connection(
 
 #[tauri::command]
 fn get_members(app: tauri::AppHandle) -> Vec<String> {
-    read_settings(&app).members
+    effective_members(&read_settings(&app))
 }
 
 #[tauri::command]
-fn add_member(app: tauri::AppHandle, login: String) -> Result<Vec<String>, String> {
+fn add_member(app: tauri::AppHandle, login: String) -> Result<SettingsView, String> {
     let login = login.trim().trim_start_matches('@').to_string();
     if login.is_empty() {
         return Err("Username is empty.".into());
@@ -451,21 +513,21 @@ fn add_member(app: tauri::AppHandle, login: String) -> Result<Vec<String>, Strin
         s.members.sort_by_key(|m| m.to_lowercase());
         write_settings(&app, &s)?;
     }
-    Ok(s.members)
+    Ok(SettingsView::from(&s))
 }
 
 #[tauri::command]
-fn remove_member(app: tauri::AppHandle, login: String) -> Result<Vec<String>, String> {
+fn remove_member(app: tauri::AppHandle, login: String) -> Result<SettingsView, String> {
     let mut s = read_settings(&app);
     s.members.retain(|m| !m.eq_ignore_ascii_case(login.trim()));
     write_settings(&app, &s)?;
-    Ok(s.members)
+    Ok(SettingsView::from(&s))
 }
 
-/// Import all members of a GitHub team into the tracked list.
+/// Add (or refresh) a persisted group backed by a GitHub team.
 /// `team_slug` must be in `org/team-slug` format.
 #[tauri::command]
-async fn import_team(app: tauri::AppHandle, team_slug: String) -> Result<Vec<String>, String> {
+async fn add_group(app: tauri::AppHandle, team_slug: String) -> Result<SettingsView, String> {
     let s = read_settings(&app);
     if s.base_url.trim().is_empty() || s.token.trim().is_empty() {
         return Err("Configure the GitHub host and token in Settings first.".into());
@@ -475,7 +537,7 @@ async fn import_team(app: tauri::AppHandle, team_slug: String) -> Result<Vec<Str
         return Err("The GitHub host looks invalid.".into());
     }
 
-    let slug = team_slug.trim().trim_start_matches('/');
+    let slug = team_slug.trim().trim_start_matches('/').to_string();
     let parts: Vec<&str> = slug.splitn(2, '/').collect();
     if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
         return Err("Team slug must be in org/team-slug format.".into());
@@ -500,14 +562,37 @@ async fn import_team(app: tauri::AppHandle, team_slug: String) -> Result<Vec<Str
     }
 
     let mut s = read_settings(&app);
-    for login in &logins {
-        if !s.members.iter().any(|m| m.eq_ignore_ascii_case(login)) {
-            s.members.push(login.clone());
-        }
+    if let Some(g) = s.groups.iter_mut().find(|g| g.slug.eq_ignore_ascii_case(&slug)) {
+        g.members = logins;
+    } else {
+        s.groups.push(Group { slug, members: logins });
     }
-    s.members.sort_by_key(|m| m.to_lowercase());
+    s.groups.sort_by_key(|g| g.slug.to_lowercase());
     write_settings(&app, &s)?;
-    Ok(s.members)
+    Ok(SettingsView::from(&s))
+}
+
+#[tauri::command]
+fn remove_group(app: tauri::AppHandle, slug: String) -> Result<SettingsView, String> {
+    let mut s = read_settings(&app);
+    s.groups.retain(|g| !g.slug.eq_ignore_ascii_case(slug.trim()));
+    write_settings(&app, &s)?;
+    Ok(SettingsView::from(&s))
+}
+
+#[tauri::command]
+fn save_ui_prefs(
+    app: tauri::AppHandle,
+    sidebar_visible: bool,
+    view_mode: String,
+    theme: String,
+) -> Result<SettingsView, String> {
+    let mut s = read_settings(&app);
+    s.sidebar_visible = sidebar_visible;
+    s.view_mode = view_mode;
+    s.theme = theme;
+    write_settings(&app, &s)?;
+    Ok(SettingsView::from(&s))
 }
 
 #[tauri::command]
@@ -526,7 +611,16 @@ async fn fetch_prs(app: tauri::AppHandle) -> Result<FetchResult, String> {
     // Fetch initial rate-limit state (uses the core API, not the search quota).
     let initial_rl = fetch_rate_limit(&client, &api, &s.token).await?;
 
-    if s.members.is_empty() {
+    let mut members = effective_members(&s);
+    // Dev-only knob: cap how many members get queried, to burn through less
+    // of the real rate limit while iterating locally. Never touches
+    // persisted settings; unset in normal use.
+    if let Ok(max) = std::env::var("PRDASH_DEV_MAX_MEMBERS") {
+        if let Ok(max) = max.parse::<usize>() {
+            members.truncate(max);
+        }
+    }
+    if members.is_empty() {
         return Ok(FetchResult { prs: vec![], rate_limit: initial_rl });
     }
 
@@ -538,7 +632,7 @@ async fn fetch_prs(app: tauri::AppHandle) -> Result<FetchResult, String> {
 
     let mut by_url: HashMap<String, Pr> = HashMap::new();
 
-    for (i, member) in s.members.iter().enumerate() {
+    for (i, member) in members.iter().enumerate() {
         // Before each member's 3 calls: sleep if the window is exhausted,
         // or add a short inter-member pause to avoid secondary rate limits.
         if remaining < 3 && remaining >= 0 {
@@ -800,7 +894,9 @@ fn main() {
             get_members,
             add_member,
             remove_member,
-            import_team,
+            add_group,
+            remove_group,
+            save_ui_prefs,
             fetch_prs,
             approve_pr,
             close_pr,

@@ -8,9 +8,17 @@
   </head>
   <body>
     <header class="topbar">
-      <div class="brand">
-        <span class="dot"></span>
-        <h1>Team PR Dashboard</h1>
+      <div class="topbar-left">
+        <button id="sidebar-toggle-btn" class="btn ghost sidebar-toggle" title="Show/hide filter sidebar">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/>
+            <line x1="6" y1="2.5" x2="6" y2="13.5"/>
+          </svg>
+        </button>
+        <div class="brand">
+          <span class="dot"></span>
+          <h1>Team PR Dashboard</h1>
+        </div>
       </div>
       <div class="topbar-actions">
         <span id="rate-limit-badge" class="rate-limit-badge hidden"></span>
@@ -20,41 +28,18 @@
       </div>
     </header>
 
-    <main class="layout">
-      <!-- Sidebar: team members -->
-      <aside class="sidebar">
-        <h2>Team</h2>
+    <main class="layout" id="layout">
+      <!-- Sidebar: filter PRs by user/group -->
+      <aside class="sidebar" id="sidebar">
+        <h2>Filter</h2>
+        <p class="muted small" style="margin: -6px 0 12px;">
+          Select users or groups to narrow the PR list. Nothing selected
+          shows everyone.
+        </p>
 
-        <form id="add-member-form" class="add-row">
-          <input
-            id="member-input"
-            type="text"
-            placeholder="GitHub username"
-            autocomplete="off"
-            spellcheck="false"
-          />
-          <button type="submit" class="btn small">Add</button>
-        </form>
-
-        <div class="sidebar-divider">
-          <span>or import a team</span>
-        </div>
-
-        <form id="import-team-form" class="add-row">
-          <input
-            id="team-input"
-            type="text"
-            placeholder="org/team-slug"
-            autocomplete="off"
-            spellcheck="false"
-          />
-          <button type="submit" class="btn small">Import</button>
-        </form>
-
-        <ul id="member-list" class="member-list"></ul>
-        <p id="member-empty" class="muted small">
-          No members yet. Add a GitHub username above to start tracking their
-          open pull requests.
+        <ul id="filter-list" class="filter-list"></ul>
+        <p id="filter-empty" class="muted small">
+          No users or groups yet. Add them from Settings.
         </p>
       </aside>
 
@@ -73,12 +58,18 @@
               placeholder="Filter by title, repo, or author…"
             />
           </div>
-          <div class="summary" id="summary"></div>
+          <div class="toolbar-right">
+            <div class="view-toggle" role="group" aria-label="View mode">
+              <button id="view-list-btn" class="view-toggle-btn" title="List view">☰ List</button>
+              <button id="view-card-btn" class="view-toggle-btn" title="Card view">▦ Cards</button>
+            </div>
+            <div class="summary" id="summary"></div>
+          </div>
         </div>
 
         <div id="status-banner" class="banner hidden"></div>
 
-        <div class="table-wrap">
+        <div class="table-wrap" id="list-view">
           <table class="pr-table">
             <thead>
               <tr>
@@ -93,55 +84,131 @@
             </thead>
             <tbody id="pr-body"></tbody>
           </table>
-          <div id="empty-state" class="empty hidden"></div>
         </div>
+
+        <div class="card-wrap hidden" id="card-view">
+          <div class="card-grid" id="card-grid"></div>
+        </div>
+
+        <div id="loading-overlay" class="loading-overlay hidden">
+          <div class="spinner"></div>
+          <p>Loading pull requests…</p>
+        </div>
+
+        <div id="empty-state" class="empty hidden"></div>
       </section>
     </main>
 
     <!-- Settings modal -->
     <div id="settings-modal" class="modal hidden">
-      <div class="modal-card">
-        <h2>Connection settings</h2>
-        <label class="field">
-          <span>GitHub Enterprise host</span>
-          <input
-            id="base-url"
-            type="text"
-            placeholder="https://github.your-company.com"
-            spellcheck="false"
-          />
-          <small class="muted"
-            >The REST API root (<code>/api/v3</code>) is added
-            automatically.</small
-          >
-        </label>
-        <label class="field">
-          <span>Auto-refresh interval</span>
-          <div class="refresh-row">
-            <input
-              id="refresh-mins"
-              type="number"
-              min="1"
-              max="120"
-              style="width: 80px;"
-            />
-            <span class="muted" style="font-size: 13px;">minutes</span>
+      <div class="modal-card settings-card">
+        <div class="settings-layout">
+          <nav class="settings-nav">
+            <button type="button" class="settings-nav-btn active" data-category="connections">Connections</button>
+            <button type="button" class="settings-nav-btn" data-category="users-groups">Users and Groups</button>
+            <button type="button" class="settings-nav-btn" data-category="appearance">Appearance</button>
+          </nav>
+
+          <div class="settings-panels">
+            <section class="settings-panel" data-panel="connections">
+              <h2>Connections</h2>
+              <label class="field">
+                <span>GitHub Enterprise host</span>
+                <input
+                  id="base-url"
+                  type="text"
+                  placeholder="https://github.your-company.com"
+                  spellcheck="false"
+                />
+                <small class="muted"
+                  >The REST API root (<code>/api/v3</code>) is added
+                  automatically.</small
+                >
+              </label>
+              <label class="field">
+                <span>Auto-refresh interval</span>
+                <div class="refresh-row">
+                  <input
+                    id="refresh-mins"
+                    type="number"
+                    min="1"
+                    max="120"
+                    style="width: 80px;"
+                  />
+                  <span class="muted" style="font-size: 13px;">minutes</span>
+                </div>
+                <small class="muted">How often the dashboard refreshes automatically.</small>
+              </label>
+              <label class="field">
+                <span>Personal Access Token</span>
+                <input
+                  id="token"
+                  type="password"
+                  placeholder="ghp_… (leave blank to keep the saved token)"
+                  spellcheck="false"
+                />
+                <small class="muted"
+                  >Needs <code>repo</code> scope. Stored securely in the OS
+                  keychain.</small
+                >
+              </label>
+            </section>
+
+            <section class="settings-panel hidden" data-panel="users-groups">
+              <h2>Users and Groups</h2>
+              <div class="field">
+                <span>Groups</span>
+                <ul id="settings-group-list" class="settings-list"></ul>
+                <p id="settings-group-empty" class="muted small">No groups yet.</p>
+                <form id="add-group-form" class="add-row">
+                  <input
+                    id="group-input"
+                    type="text"
+                    placeholder="org/team-slug"
+                    autocomplete="off"
+                    spellcheck="false"
+                  />
+                  <button type="submit" class="btn small">Add group</button>
+                </form>
+                <small class="muted"
+                  >Imports the GitHub team's current roster. Removing a group
+                  untracks its members (unless they're also tracked
+                  individually or via another group).</small
+                >
+              </div>
+
+              <div class="field">
+                <span>Individual users</span>
+                <ul id="settings-member-list" class="settings-list"></ul>
+                <p id="settings-member-empty" class="muted small">No individual users yet.</p>
+                <form id="add-member-form" class="add-row">
+                  <input
+                    id="member-input"
+                    type="text"
+                    placeholder="GitHub username"
+                    autocomplete="off"
+                    spellcheck="false"
+                  />
+                  <button type="submit" class="btn small">Add</button>
+                </form>
+              </div>
+            </section>
+
+            <section class="settings-panel hidden" data-panel="appearance">
+              <h2>Appearance</h2>
+              <div class="field">
+                <span>Theme</span>
+                <div class="view-toggle" role="group" aria-label="Theme">
+                  <button type="button" id="theme-light-btn" class="view-toggle-btn" data-theme-choice="light">Light</button>
+                  <button type="button" id="theme-dark-btn" class="view-toggle-btn" data-theme-choice="dark">Dark</button>
+                  <button type="button" id="theme-system-btn" class="view-toggle-btn" data-theme-choice="system">System</button>
+                </div>
+                <small class="muted">"System" follows your OS setting and updates live.</small>
+              </div>
+            </section>
           </div>
-          <small class="muted">How often the dashboard refreshes automatically.</small>
-        </label>
-        <label class="field">
-          <span>Personal Access Token</span>
-          <input
-            id="token"
-            type="password"
-            placeholder="ghp_… (leave blank to keep the saved token)"
-            spellcheck="false"
-          />
-          <small class="muted"
-            >Needs <code>repo</code> scope. Stored securely in the OS
-            keychain.</small
-          >
-        </label>
+        </div>
+
         <div class="modal-actions">
           <button id="settings-cancel" class="btn ghost">Cancel</button>
           <button id="settings-save" class="btn primary">Save</button>
