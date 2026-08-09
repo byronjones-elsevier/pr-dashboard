@@ -16,6 +16,9 @@ by a user-managed team, across a GitHub **Enterprise** instance.
   roster). Managed from the Settings dialog; persisted to a local config file.
 - **Sidebar filter:** collapsible sidebar lists every tracked user/group as a
   checkbox; checking one or more narrows the PR list to their PRs.
+- **List/Card view:** a toolbar toggle switches between the table and a
+  responsive card grid; both are kept reconciled in the DOM simultaneously
+  (see `renderTable()`) so switching is instant with no re-fetch.
 - **Auth:** GitHub Enterprise base URL + Personal Access Token, entered in-app.
   Stored in OS keychain; plaintext config.json fallback for unsigned builds.
 
@@ -141,10 +144,15 @@ quota, not search) to return current state to the UI.
 - **Recursive `setTimeout` for auto-refresh** — `setInterval` fires at a fixed
   wall-clock cadence regardless of how long the fetch takes. The recursive
   approach starts the countdown only after the previous fetch fully resolves.
-- **Keyed DOM reconciliation** — `renderTable()` maintains a `Map<url, tr>` of
-  live rows. On refresh: unchanged rows are skipped entirely, changed rows are
-  updated in place, new rows are inserted, and gone rows are removed. Scroll
-  position is preserved.
+- **Keyed DOM reconciliation** — `renderTable()` uses a shared `reconcileKeyed()`
+  helper (keyed by PR URL) for both the table body and the card grid. On
+  refresh: unchanged nodes are skipped entirely, changed ones updated in
+  place, new ones inserted, gone ones removed. Scroll position is preserved
+  in whichever view is visible.
+- **Card grid is CSS-only responsive** — `grid-template-columns: repeat(auto-fill,
+  minmax(300px, 1fr))` reflows column count purely from container width; no
+  resize listener needed. `overflow-y: auto` on `.card-wrap` gives automatic
+  scrollbars.
 
 ## Verified (2026-07-31)
 
@@ -163,6 +171,9 @@ quota, not search) to return current state to the UI.
 - Sidebar show/hide toggle confirmed both directions, including the
   `sidebar-collapsed` single-column grid fallback and that the choice persists
   across app restarts via `save_ui_prefs`.
+- List/Card view toggle confirmed: card grid renders 3 columns at 1280px width
+  and collapses to 1 column at 760px with no code change (pure CSS grid
+  reflow); switching views is instant since both DOM trees stay reconciled.
 
 ## Remaining risks / notes
 

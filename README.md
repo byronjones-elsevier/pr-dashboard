@@ -19,6 +19,9 @@ your team, across your whole GitHub Enterprise instance.
   PR list to just their PRs, unchecking everything shows all of them again.
 - **Filter & sort** — "Needs attention" toggle (hides approved PRs), free-text
   filter by title/repo/author, and click any column header to sort.
+- **List or Card view** — toggle between the sortable table and a responsive
+  card grid (columns adapt to window width, scrolls automatically when the
+  list overflows). The choice is remembered across restarts.
 - **PR actions** — each row has four icon buttons:
   - ✓ **Approve with comment** — opens a dialog, submits a GitHub review
   - 👁 **Open for review** — opens the PR's Files tab in the browser

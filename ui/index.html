@@ -51,12 +51,18 @@
               placeholder="Filter by title, repo, or author…"
             />
           </div>
-          <div class="summary" id="summary"></div>
+          <div class="toolbar-right">
+            <div class="view-toggle" role="group" aria-label="View mode">
+              <button id="view-list-btn" class="view-toggle-btn" title="List view">☰ List</button>
+              <button id="view-card-btn" class="view-toggle-btn" title="Card view">▦ Cards</button>
+            </div>
+            <div class="summary" id="summary"></div>
+          </div>
         </div>
 
         <div id="status-banner" class="banner hidden"></div>
 
-        <div class="table-wrap">
+        <div class="table-wrap" id="list-view">
           <table class="pr-table">
             <thead>
               <tr>
@@ -71,8 +77,13 @@
             </thead>
             <tbody id="pr-body"></tbody>
           </table>
-          <div id="empty-state" class="empty hidden"></div>
         </div>
+
+        <div class="card-wrap hidden" id="card-view">
+          <div class="card-grid" id="card-grid"></div>
+        </div>
+
+        <div id="empty-state" class="empty hidden"></div>
       </section>
     </main>
 
