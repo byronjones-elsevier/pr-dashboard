@@ -21,40 +21,17 @@
     </header>
 
     <main class="layout">
-      <!-- Sidebar: team members -->
-      <aside class="sidebar">
-        <h2>Team</h2>
+      <!-- Sidebar: filter PRs by user/group -->
+      <aside class="sidebar" id="sidebar">
+        <h2>Filter</h2>
+        <p class="muted small" style="margin: -6px 0 12px;">
+          Select users or groups to narrow the PR list. Nothing selected
+          shows everyone.
+        </p>
 
-        <form id="add-member-form" class="add-row">
-          <input
-            id="member-input"
-            type="text"
-            placeholder="GitHub username"
-            autocomplete="off"
-            spellcheck="false"
-          />
-          <button type="submit" class="btn small">Add</button>
-        </form>
-
-        <div class="sidebar-divider">
-          <span>or import a team</span>
-        </div>
-
-        <form id="import-team-form" class="add-row">
-          <input
-            id="team-input"
-            type="text"
-            placeholder="org/team-slug"
-            autocomplete="off"
-            spellcheck="false"
-          />
-          <button type="submit" class="btn small">Import</button>
-        </form>
-
-        <ul id="member-list" class="member-list"></ul>
-        <p id="member-empty" class="muted small">
-          No members yet. Add a GitHub username above to start tracking their
-          open pull requests.
+        <ul id="filter-list" class="filter-list"></ul>
+        <p id="filter-empty" class="muted small">
+          No users or groups yet. Add them from Settings.
         </p>
       </aside>
 
@@ -142,6 +119,44 @@
             keychain.</small
           >
         </label>
+
+        <div class="field">
+          <span>Groups</span>
+          <ul id="settings-group-list" class="settings-list"></ul>
+          <p id="settings-group-empty" class="muted small">No groups yet.</p>
+          <form id="add-group-form" class="add-row">
+            <input
+              id="group-input"
+              type="text"
+              placeholder="org/team-slug"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <button type="submit" class="btn small">Add group</button>
+          </form>
+          <small class="muted"
+            >Imports the GitHub team's current roster. Removing a group
+            untracks its members (unless they're also tracked
+            individually or via another group).</small
+          >
+        </div>
+
+        <div class="field">
+          <span>Individual users</span>
+          <ul id="settings-member-list" class="settings-list"></ul>
+          <p id="settings-member-empty" class="muted small">No individual users yet.</p>
+          <form id="add-member-form" class="add-row">
+            <input
+              id="member-input"
+              type="text"
+              placeholder="GitHub username"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <button type="submit" class="btn small">Add</button>
+          </form>
+        </div>
+
         <div class="modal-actions">
           <button id="settings-cancel" class="btn ghost">Cancel</button>
           <button id="settings-save" class="btn primary">Save</button>

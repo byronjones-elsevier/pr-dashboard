@@ -9,7 +9,8 @@ function openExternal(url) {
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
-let members = [];
+let members = []; // individually-added users
+let groups = []; // [{ slug, members: [...] }] persisted GitHub teams
 let prs = [];
 let sortKey = "created_at";
 let sortDir = "asc"; // asc = oldest first
@@ -26,8 +27,8 @@ const VERY_STALE_DAYS = 21;
 // Element refs
 // ---------------------------------------------------------------------------
 const el = (id) => document.getElementById(id);
-const memberList = el("member-list");
-const memberEmpty = el("member-empty");
+const filterList = el("filter-list");
+const filterEmpty = el("filter-empty");
 const prBody = el("pr-body");
 const emptyState = el("empty-state");
 const banner = el("status-banner");
@@ -39,6 +40,20 @@ const rateLimitBadge = el("rate-limit-badge");
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+// Union of individually-added members and every group's roster, deduped
+// case-insensitively. Mirrors effective_members() on the Rust side.
+function effectiveLogins() {
+  const seen = new Map();
+  for (const m of members) seen.set(m.toLowerCase(), m);
+  for (const g of groups) {
+    for (const m of g.members) {
+      if (!seen.has(m.toLowerCase())) seen.set(m.toLowerCase(), m);
+    }
+  }
+  return Array.from(seen.values());
+}
+
 function daysSince(iso) {
   if (!iso) return null;
   const then = new Date(iso).getTime();
@@ -103,7 +118,7 @@ function updateRateLimitBadge(rl) {
     return;
   }
   const { search_remaining, search_limit, search_reset } = rl;
-  const needed = members.length * 3;
+  const needed = effectiveLogins().length * 3;
   const pct = search_limit > 0 ? search_remaining / search_limit : 1;
   const low = search_remaining < Math.max(needed * 2, 6); // < 2 refreshes left
   const critical = search_remaining < needed;             // < 1 refresh left
@@ -185,34 +200,78 @@ function closeConfirmModal() {
 }
 
 // ---------------------------------------------------------------------------
-// Members
+// Team management (Settings dialog) + sidebar filter list
 // ---------------------------------------------------------------------------
 function prCountFor(login) {
   return prs.filter((p) => p.author.toLowerCase() === login.toLowerCase())
     .length;
 }
 
-function renderMembers() {
-  memberList.innerHTML = "";
-  memberEmpty.classList.toggle("hidden", members.length > 0);
+function applyTeamUpdate(view) {
+  members = view.members || [];
+  groups = view.groups || [];
+  renderTeamSettingsLists();
+  renderSidebarFilter();
+}
+
+function renderTeamSettingsLists() {
+  const groupList = el("settings-group-list");
+  const groupEmpty = el("settings-group-empty");
+  groupList.innerHTML = "";
+  groupEmpty.classList.toggle("hidden", groups.length > 0);
+  for (const g of groups) {
+    const li = document.createElement("li");
+    li.innerHTML = `
+      <span class="name">${escapeHtml(g.slug)}</span>
+      <span class="count">${g.members.length} member${g.members.length === 1 ? "" : "s"}</span>
+      <button class="remove-x" title="Remove ${escapeHtml(g.slug)}">✕</button>`;
+    li.querySelector(".remove-x").addEventListener("click", () => removeGroup(g.slug));
+    groupList.appendChild(li);
+  }
+
+  const memberListEl = el("settings-member-list");
+  const memberEmptyEl = el("settings-member-empty");
+  memberListEl.innerHTML = "";
+  memberEmptyEl.classList.toggle("hidden", members.length > 0);
+  for (const m of members) {
+    const li = document.createElement("li");
+    li.innerHTML = `
+      <span class="name">${escapeHtml(m)}</span>
+      <button class="remove-x" title="Remove ${escapeHtml(m)}">✕</button>`;
+    li.querySelector(".remove-x").addEventListener("click", () => removeMember(m));
+    memberListEl.appendChild(li);
+  }
+}
+
+// Read-only informational list in the sidebar. Selection/filtering lands
+// in a follow-up feature; today it just mirrors what's tracked.
+function renderSidebarFilter() {
+  filterList.innerHTML = "";
+  const logins = effectiveLogins();
+  filterEmpty.classList.toggle("hidden", groups.length > 0 || members.length > 0);
+
+  for (const g of groups) {
+    const li = document.createElement("li");
+    const count = g.members.reduce((sum, m) => sum + prCountFor(m), 0);
+    li.innerHTML = `
+      <span class="name">${escapeHtml(g.slug)}</span>
+      <span class="count">${count} PR${count === 1 ? "" : "s"}</span>`;
+    filterList.appendChild(li);
+  }
   for (const m of members) {
     const li = document.createElement("li");
     const count = prCountFor(m);
     li.innerHTML = `
       <span class="name">${escapeHtml(m)}</span>
-      <span class="count">${count} PR${count === 1 ? "" : "s"}</span>
-      <button class="remove-x" title="Remove ${escapeHtml(m)}">✕</button>`;
-    li.querySelector(".remove-x").addEventListener("click", () =>
-      removeMember(m)
-    );
-    memberList.appendChild(li);
+      <span class="count">${count} PR${count === 1 ? "" : "s"}</span>`;
+    filterList.appendChild(li);
   }
+  void logins; // reserved for the upcoming select/deselect filter
 }
 
 async function addMember(login) {
   try {
-    members = await invoke("add_member", { login });
-    renderMembers();
+    applyTeamUpdate(await invoke("add_member", { login }));
     await refresh();
   } catch (e) {
     showBanner(String(e));
@@ -221,10 +280,23 @@ async function addMember(login) {
 
 async function removeMember(login) {
   try {
-    members = await invoke("remove_member", { login });
+    applyTeamUpdate(await invoke("remove_member", { login }));
     prs = prs.filter((p) => p.author.toLowerCase() !== login.toLowerCase());
-    renderMembers();
     renderTable();
+  } catch (e) {
+    showBanner(String(e));
+  }
+}
+
+async function addGroup(teamSlug) {
+  applyTeamUpdate(await invoke("add_group", { teamSlug }));
+  await refresh();
+}
+
+async function removeGroup(slug) {
+  try {
+    applyTeamUpdate(await invoke("remove_group", { slug }));
+    await refresh();
   } catch (e) {
     showBanner(String(e));
   }
@@ -326,7 +398,8 @@ function renderTable() {
   const awaiting = prs.filter((p) => p.review_status === "awaiting").length;
   const changes = prs.filter((p) => p.review_status === "changes_requested").length;
   const approved = prs.filter((p) => p.review_status === "approved").length;
-  if (members.length) {
+  const trackedCount = effectiveLogins().length;
+  if (trackedCount) {
     const parts = [`${prs.length} open PR${prs.length === 1 ? "" : "s"}`];
     if (awaiting) parts.push(`${awaiting} awaiting`);
     if (changes) parts.push(`${changes} changes requested`);
@@ -337,10 +410,10 @@ function renderTable() {
   }
 
   // Empty-state messaging (don't return early — fall through to reconcile).
-  if (members.length === 0) {
+  if (trackedCount === 0) {
     emptyState.classList.remove("hidden");
     emptyState.textContent =
-      "Add team members in the sidebar to see their open pull requests.";
+      "Add users or groups in Settings to see their open pull requests.";
   } else if (list.length === 0) {
     emptyState.classList.remove("hidden");
     emptyState.textContent = prs.length
@@ -388,9 +461,9 @@ function renderTable() {
 function scheduleNextRefresh() {
   clearTimeout(autoRefreshTimer);
   autoRefreshTimer = setTimeout(async () => {
-    const needed = members.length * 3;
+    const needed = effectiveLogins().length * 3;
     const rateLimitOk = !lastRateLimit || lastRateLimit.search_remaining >= needed;
-    if (!refreshBtn.disabled && members.length > 0 && rateLimitOk) {
+    if (!refreshBtn.disabled && effectiveLogins().length > 0 && rateLimitOk) {
       await refresh();
     }
     scheduleNextRefresh();
@@ -398,10 +471,10 @@ function scheduleNextRefresh() {
 }
 
 async function refresh() {
-  if (members.length === 0) {
+  if (effectiveLogins().length === 0) {
     prs = [];
     renderTable();
-    renderMembers();
+    renderSidebarFilter();
     return;
   }
   refreshBtn.disabled = true;
@@ -414,7 +487,7 @@ async function refresh() {
     updateRateLimitBadge(lastRateLimit);
     lastRefresh.textContent = `Updated ${new Date().toLocaleTimeString()}`;
     renderTable();
-    renderMembers();
+    renderSidebarFilter();
   } catch (e) {
     showBanner(String(e));
   } finally {
@@ -480,24 +553,22 @@ el("add-member-form").addEventListener("submit", (e) => {
   }
 });
 
-el("import-team-form").addEventListener("submit", async (e) => {
+el("add-group-form").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const input = el("team-input");
+  const input = el("group-input");
   const val = input.value.trim();
   if (!val) return;
   const btn = e.submitter;
   btn.disabled = true;
   btn.textContent = "…";
   try {
-    members = await invoke("import_team", { teamSlug: val });
+    await addGroup(val);
     input.value = "";
-    renderMembers();
-    await refresh();
   } catch (err) {
     showBanner(String(err));
   } finally {
     btn.disabled = false;
-    btn.textContent = "Import";
+    btn.textContent = "Add group";
   }
 });
 
@@ -607,7 +678,9 @@ async function init() {
   try {
     window.__cfg = await invoke("get_settings");
     members = window.__cfg.members || [];
-    renderMembers();
+    groups = window.__cfg.groups || [];
+    renderTeamSettingsLists();
+    renderSidebarFilter();
     renderTable();
     autoRefreshMs = (window.__cfg.refresh_interval_mins ?? 10) * 60 * 1000;
 

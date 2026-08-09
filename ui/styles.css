@@ -175,22 +175,8 @@ body {
   flex: 1;
   min-width: 0;
 }
-.sidebar-divider {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 10px 0;
-  color: var(--muted);
-  font-size: 11px;
-}
-.sidebar-divider::before,
-.sidebar-divider::after {
-  content: "";
-  flex: 1;
-  border-top: 1px solid var(--border);
-}
-
-.member-list {
+.filter-list,
+.settings-list {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -198,7 +184,13 @@ body {
   flex-direction: column;
   gap: 4px;
 }
-.member-list li {
+.settings-list {
+  margin-bottom: 10px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+.filter-list li,
+.settings-list li {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -207,13 +199,16 @@ body {
   background: var(--bg-elev-2);
   border: 1px solid transparent;
 }
-.member-list li:hover {
+.filter-list li:hover,
+.settings-list li:hover {
   border-color: var(--border);
 }
-.member-list .name {
+.filter-list .name,
+.settings-list .name {
   font-weight: 500;
 }
-.member-list .count {
+.filter-list .count,
+.settings-list .count {
   color: var(--muted);
   font-size: 12px;
   margin-left: auto;
@@ -474,6 +469,8 @@ input[type="password"]:focus {
   padding: 24px;
   width: 460px;
   max-width: calc(100vw - 40px);
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
   box-shadow: var(--shadow);
 }
 .modal-card h2 {
