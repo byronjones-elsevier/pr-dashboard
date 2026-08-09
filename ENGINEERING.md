@@ -49,7 +49,7 @@ pr-dashboard/
 ├── ENGINEERING.md                   # this file
 ├── AGENTS.md                        # AI agent guidance
 ├── CLAUDE.md                        # repo guide for Claude Code
-├── .github/workflows/build.yml      # CI: builds all 5 targets; releases on v* tags
+├── .github/workflows/build.yml      # CI: builds all 4 targets; releases on v* tags
 ├── ui/                              # frontend (frontendDist target)
 │   ├── index.html
 │   ├── styles.css
@@ -220,3 +220,28 @@ make help                      # show all Makefile targets
 
 Prereqs: Rust stable ≥ 1.88, Node 18+, Tauri OS deps
 (https://tauri.app/start/prerequisites/).
+
+### Cross-platform builds (local + CI)
+
+Four targets: Windows x64, macOS ARM64, macOS x64, Linux x64 (Windows ARM64
+was dropped from the Makefile/CI/rustup-targets — not part of the current
+target list; previously present under `build-windows-arm`).
+
+- `make build-<target>` runs `tauri build --target <triple>`, then stages the
+  raw executable **and** the full `bundle/` tree (installers) into
+  `dist/<target>/` via the internal `stage` target — one predictable output
+  location with both deliverables. `make build-all` chains all four; the
+  Windows/Linux legs only succeed when run on that native OS, since Tauri's
+  installer bundlers (WiX/NSIS, dpkg/AppImage) require the matching platform.
+- CI (`.github/workflows/build.yml`) runs one job per target on the matching
+  native GitHub-hosted runner (macos-14, macos-13, windows-latest,
+  ubuntu-latest — no cross-compilation containers). Each job now also renames
+  the raw binary to `pr-dashboard-<target>[.exe]` before
+  `upload-artifact` — every target's raw binary is otherwise named identically
+  (`pr-dashboard`/`pr-dashboard.exe`), and the `release` job downloads with
+  `merge-multiple: true`, which flattens all artifacts into one directory and
+  would silently clobber same-named files across platforms without the rename.
+- `help`'s target-listing regex was `[a-zA-Z_-]+` (no digits) — this silently
+  dropped every target with a digit in its name (`build-macos-x64`,
+  `build-linux-x64`, etc.) from `make help` output. Fixed to
+  `[a-zA-Z0-9_-]+`. Pre-existing bug, unrelated to the Windows ARM64 removal.

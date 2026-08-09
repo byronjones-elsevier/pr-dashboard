@@ -72,19 +72,31 @@ On first launch a **Settings** dialog opens. Enter:
 Then open **Settings** (⚙︎) to add team members by GitHub username, or add a
 whole group with `org/team-slug`, and hit **Refresh**.
 
-## Build distributable installers
+## Build distributable installers + executables
+
+Supported targets: **Windows x64, macOS ARM64, macOS x64, Linux x64.**
 
 ```bash
-make build                  # native platform
-make build-macos-arm        # macOS Apple Silicon (.dmg)
-make build-macos-x64        # macOS Intel (.dmg)
-make build-windows-x64      # Windows x64 (.msi / .exe)
-make build-windows-arm      # Windows ARM64 (.msi / .exe)
-make build-linux-x64        # Linux Debian x64 (.deb / .AppImage)
+make setup                  # one-time: add the 4 rustup cross-compilation targets
+make build                  # native platform only (output: src-tauri/target/release/bundle/)
+make build-macos-arm        # macOS Apple Silicon — raw binary + .dmg, staged in dist/macos-arm64/
+make build-macos-x64        # macOS Intel — raw binary + .dmg, staged in dist/macos-x64/
+make build-windows-x64      # Windows x64 — raw binary + .msi/.exe, staged in dist/windows-x64/  (must run on Windows)
+make build-linux-x64        # Linux x64 — raw binary + .deb/.AppImage, staged in dist/linux-x64/  (must run on Linux)
+make build-all              # run all 4 (Windows/Linux legs only succeed on that native OS)
 ```
 
-CI builds for all five targets automatically via `.github/workflows/build.yml`.
-A GitHub Release with all bundles is created on any `v*` tag push.
+Each `build-<target>` command stages **both** the raw executable and its
+installer(s) into `dist/<target>/` for that platform. macOS can cross-build
+both Mac arches from either Mac; Windows and Linux installers require running
+on that native OS (matching the CI runner matrix below) — this mirrors Tauri's
+own bundler, which needs the native platform's packaging tools (WiX/NSIS,
+dpkg/AppImage).
+
+CI builds all four targets automatically via `.github/workflows/build.yml`,
+uploading both the installer(s) and the raw executable as build artifacts for
+every push to `main`. A GitHub Release with all of them is created on any
+`v*` tag push.
 
 > To replace the placeholder icon: drop a square PNG at `assets/icon.png` and
 > run `npm run tauri icon assets/icon.png`.
@@ -97,7 +109,8 @@ A GitHub Release with all bundles is created on any `v*` tag push.
 | `src-tauri/src/main.rs` | Entire Rust backend: config, GitHub API, commands |
 | `src-tauri/Cargo.toml` | Rust dependencies |
 | `Makefile` | Build shortcuts for all platforms |
-| `.github/workflows/build.yml` | CI/CD for all 5 platform builds |
+| `dist/<target>/` | Staged local build output (raw executable + installer), gitignored |
+| `.github/workflows/build.yml` | CI/CD for all 4 platform builds |
 
 Config and settings are stored in:
 
