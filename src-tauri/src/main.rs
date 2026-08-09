@@ -22,6 +22,10 @@ fn default_view_mode() -> String {
     "list".to_string()
 }
 
+fn default_theme() -> String {
+    "system".to_string()
+}
+
 /// A persisted GitHub team: `slug` is "org/team-slug", `members` is the
 /// team's roster as of the last import/refresh.
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -51,6 +55,8 @@ struct Settings {
     sidebar_visible: bool,
     #[serde(default = "default_view_mode")]
     view_mode: String,
+    #[serde(default = "default_theme")]
+    theme: String,
 }
 
 /// Union of individually-added members and every group's roster, deduped
@@ -77,6 +83,7 @@ struct SettingsView {
     refresh_interval_mins: u32,
     sidebar_visible: bool,
     view_mode: String,
+    theme: String,
 }
 
 impl From<&Settings> for SettingsView {
@@ -96,6 +103,11 @@ impl From<&Settings> for SettingsView {
                 default_view_mode()
             } else {
                 s.view_mode.clone()
+            },
+            theme: if s.theme.is_empty() {
+                default_theme()
+            } else {
+                s.theme.clone()
             },
         }
     }
@@ -573,10 +585,12 @@ fn save_ui_prefs(
     app: tauri::AppHandle,
     sidebar_visible: bool,
     view_mode: String,
+    theme: String,
 ) -> Result<SettingsView, String> {
     let mut s = read_settings(&app);
     s.sidebar_visible = sidebar_visible;
     s.view_mode = view_mode;
+    s.theme = theme;
     write_settings(&app, &s)?;
     Ok(SettingsView::from(&s))
 }
@@ -597,7 +611,15 @@ async fn fetch_prs(app: tauri::AppHandle) -> Result<FetchResult, String> {
     // Fetch initial rate-limit state (uses the core API, not the search quota).
     let initial_rl = fetch_rate_limit(&client, &api, &s.token).await?;
 
-    let members = effective_members(&s);
+    let mut members = effective_members(&s);
+    // Dev-only knob: cap how many members get queried, to burn through less
+    // of the real rate limit while iterating locally. Never touches
+    // persisted settings; unset in normal use.
+    if let Ok(max) = std::env::var("PRDASH_DEV_MAX_MEMBERS") {
+        if let Ok(max) = max.parse::<usize>() {
+            members.truncate(max);
+        }
+    }
     if members.is_empty() {
         return Ok(FetchResult { prs: vec![], rate_limit: initial_rl });
     }

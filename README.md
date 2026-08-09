@@ -22,6 +22,8 @@ your team, across your whole GitHub Enterprise instance.
 - **List or Card view** — toggle between the sortable table and a responsive
   card grid (columns adapt to window width, scrolls automatically when the
   list overflows). The choice is remembered across restarts.
+- **Light/Dark/System theme** — set in Settings → Appearance. "System" follows
+  the OS setting and updates live if you change it while the app is open.
 - **PR actions** — each row has four icon buttons:
   - ✓ **Approve with comment** — opens a dialog, submits a GitHub review
   - 👁 **Open for review** — opens the PR's Files tab in the browser
@@ -60,7 +62,10 @@ make dev           # npm run dev
 make help          # list all targets
 ```
 
-On first launch a **Settings** dialog opens. Enter:
+On first launch a **Settings** dialog opens, organized like macOS System
+Settings — a category list on the left (Connections, Users and Groups,
+Appearance), each showing its own fields on the right. Under **Connections**,
+enter:
 
 - **GitHub Enterprise host** — e.g. `https://github.your-company.com`
   (`/api/v3` is appended automatically; plain `github.com` also works).
@@ -69,8 +74,21 @@ On first launch a **Settings** dialog opens. Enter:
   Personal access tokens_ on your GitHub host.
 - **Auto-refresh interval** — minutes between automatic refreshes (minimum 1).
 
-Then open **Settings** (⚙︎) to add team members by GitHub username, or add a
-whole group with `org/team-slug`, and hit **Refresh**.
+Then switch to **Users and Groups** to add team members by GitHub username,
+or add a whole group with `org/team-slug`, and hit **Refresh**.
+
+### Faster local dev cycles
+
+Set `PRDASH_DEV_MAX_MEMBERS` to cap how many tracked members `fetch_prs`
+actually queries, so you burn through far less of the real GitHub rate limit
+while iterating on UI changes:
+
+```bash
+PRDASH_DEV_MAX_MEMBERS=2 npm run dev
+```
+
+Unset (the default), it queries everyone as normal. This only affects the
+in-memory fetch for that run — it never touches persisted settings.
 
 ## Build distributable installers + executables
 

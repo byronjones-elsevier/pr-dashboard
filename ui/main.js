@@ -21,6 +21,8 @@ let autoRefreshMs = 10 * 60 * 1000; // updated from settings on load
 let autoRefreshTimer = null;
 let sidebarVisible = true;
 let viewMode = "list"; // "list" | "card"
+let theme = "system"; // "light" | "dark" | "system"
+let systemThemeMedia = null;
 // Selected filter keys: "user:<login>" or "group:<slug>" (lowercased).
 // Empty = no filter applied (show every tracked PR).
 let filterSelection = new Set();
@@ -619,6 +621,15 @@ async function refresh() {
 // ---------------------------------------------------------------------------
 // Settings modal
 // ---------------------------------------------------------------------------
+function switchSettingsCategory(category) {
+  document.querySelectorAll(".settings-nav-btn").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.category === category);
+  });
+  document.querySelectorAll(".settings-panel").forEach((panel) => {
+    panel.classList.toggle("hidden", panel.dataset.panel !== category);
+  });
+}
+
 function openSettings() {
   el("base-url").value = window.__cfg?.base_url || "";
   el("token").value = "";
@@ -626,6 +637,7 @@ function openSettings() {
     ? "•••••••• (leave blank to keep saved token)"
     : "ghp_…";
   el("refresh-mins").value = window.__cfg?.refresh_interval_mins ?? 10;
+  switchSettingsCategory("connections");
   el("settings-modal").classList.remove("hidden");
 }
 function closeSettings() {
@@ -757,29 +769,66 @@ function applyViewMode() {
   el("view-card-btn").classList.toggle("active", viewMode === "card");
 }
 
-async function setViewMode(mode) {
-  if (viewMode === mode) return;
-  viewMode = mode;
-  applyViewMode();
+// "system" resolves live via matchMedia; "light"/"dark" are fixed choices.
+function resolveTheme() {
+  if (theme === "light" || theme === "dark") return theme;
+  return systemThemeMedia && systemThemeMedia.matches ? "dark" : "light";
+}
+
+function applyTheme() {
+  document.documentElement.setAttribute("data-theme", resolveTheme());
+  ["light", "dark", "system"].forEach((choice) => {
+    el(`theme-${choice}-btn`).classList.toggle("active", theme === choice);
+  });
+}
+
+// Wired once at boot: when the OS theme changes and the user's preference is
+// "system", follow it live without needing a restart.
+function initThemeWatcher() {
+  systemThemeMedia = window.matchMedia("(prefers-color-scheme: dark)");
+  systemThemeMedia.addEventListener("change", () => {
+    if (theme === "system") applyTheme();
+  });
+}
+
+async function saveUiPrefs() {
   try {
-    window.__cfg = await invoke("save_ui_prefs", { sidebarVisible, viewMode });
+    window.__cfg = await invoke("save_ui_prefs", { sidebarVisible, viewMode, theme });
   } catch (e) {
     showBanner(String(e));
   }
 }
 
+async function setViewMode(mode) {
+  if (viewMode === mode) return;
+  viewMode = mode;
+  applyViewMode();
+  await saveUiPrefs();
+}
+
+async function setTheme(next) {
+  if (theme === next) return;
+  theme = next;
+  applyTheme();
+  await saveUiPrefs();
+}
+
 el("sidebar-toggle-btn").addEventListener("click", async () => {
   sidebarVisible = !sidebarVisible;
   applySidebarVisibility();
-  try {
-    window.__cfg = await invoke("save_ui_prefs", { sidebarVisible, viewMode });
-  } catch (e) {
-    showBanner(String(e));
-  }
+  await saveUiPrefs();
+});
+
+document.querySelectorAll("button[data-theme-choice]").forEach((btn) => {
+  btn.addEventListener("click", () => setTheme(btn.dataset.themeChoice));
 });
 
 el("view-list-btn").addEventListener("click", () => setViewMode("list"));
 el("view-card-btn").addEventListener("click", () => setViewMode("card"));
+
+document.querySelectorAll(".settings-nav-btn").forEach((btn) => {
+  btn.addEventListener("click", () => switchSettingsCategory(btn.dataset.category));
+});
 
 el("refresh-btn").addEventListener("click", refresh);
 el("settings-btn").addEventListener("click", openSettings);
@@ -840,8 +889,10 @@ async function init() {
     groups = window.__cfg.groups || [];
     sidebarVisible = window.__cfg.sidebar_visible ?? true;
     viewMode = window.__cfg.view_mode || "list";
+    theme = window.__cfg.theme || "system";
     applySidebarVisibility();
     applyViewMode();
+    applyTheme();
     renderTeamSettingsLists();
     renderSidebarFilter();
     renderTable();
@@ -857,5 +908,10 @@ async function init() {
     showBanner("Failed to start: " + String(e));
   }
 }
+
+// Apply a theme immediately (before settings load) to avoid a flash of the
+// wrong theme on boot; init() re-applies once the persisted choice is known.
+initThemeWatcher();
+applyTheme();
 
 init();

@@ -14,6 +14,21 @@
   --shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
 }
 
+:root[data-theme="light"] {
+  --bg: #ffffff;
+  --bg-elev: #f6f8fa;
+  --bg-elev-2: #eaeef2;
+  --border: #d0d7de;
+  --text: #1f2328;
+  --muted: #59636e;
+  --accent: #0969da;
+  --accent-hover: #0860ca;
+  --green: #1a7f37;
+  --amber: #9a6700;
+  --red: #cf222e;
+  --shadow: 0 8px 24px rgba(140, 149, 159, 0.3);
+}
+
 * {
   box-sizing: border-box;
 }
@@ -656,4 +671,62 @@ input[type="password"]:focus {
   display: flex;
   justify-content: flex-end;
   gap: 10px;
+}
+
+/* Settings modal: macOS System Settings-style category sidebar + panes */
+.settings-card {
+  width: 640px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.settings-layout {
+  display: flex;
+  min-height: 420px;
+  max-height: 60vh;
+}
+.settings-nav {
+  width: 180px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 20px 10px;
+  background: var(--bg-elev-2);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+}
+.settings-nav-btn {
+  text-align: left;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+.settings-nav-btn:hover {
+  background: var(--bg-elev);
+}
+.settings-nav-btn.active {
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+.settings-panels {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 24px;
+}
+.settings-panel h2 {
+  margin: 0 0 18px;
+  font-size: 16px;
+}
+.settings-card .modal-actions {
+  padding: 16px 24px;
+  margin: 0;
+  border-top: 1px solid var(--border);
 }

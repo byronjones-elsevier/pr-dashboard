@@ -77,7 +77,7 @@ camelCase args to Rust snake_case.
 | `remove_member` | `{ login }` | `SettingsView` | Only removes from the individual list |
 | `add_group` | `{ teamSlug }` | `SettingsView` | Slug must be `org/team-slug`; imports/refreshes that group's roster |
 | `remove_group` | `{ slug }` | `SettingsView` | Untracks the group's members unless tracked elsewhere |
-| `save_ui_prefs` | `{ sidebarVisible, viewMode }` | `SettingsView` | Persists sidebar visibility + list/card view choice |
+| `save_ui_prefs` | `{ sidebarVisible, viewMode, theme }` | `SettingsView` | Persists sidebar visibility, list/card view, and theme choice |
 | `fetch_prs` | – | `FetchResult` | See below |
 | `approve_pr` | `{ ownerRepo, prNumber, comment }` | `()` | POSTs APPROVE review |
 | `close_pr` | `{ ownerRepo, prNumber }` | `()` | PATCHes state=closed |
@@ -89,7 +89,8 @@ camelCase args to Rust snake_case.
 Group = { slug: string, members: string[] }   // slug is "org/team-slug"
 
 SettingsView = { base_url: string, has_token: bool, members: string[], groups: Group[],
-                  refresh_interval_mins: u32, sidebar_visible: bool, view_mode: "list" | "card" }
+                  refresh_interval_mins: u32, sidebar_visible: bool, view_mode: "list" | "card",
+                  theme: "light" | "dark" | "system" }
 
 Pr = { title, number, repo, author, url, created_at, updated_at,
        review_status: "awaiting" | "approved" | "changes_requested" }
@@ -157,6 +158,21 @@ quota, not search) to return current state to the UI.
   minmax(300px, 1fr))` reflows column count purely from container width; no
   resize listener needed. `overflow-y: auto` on `.card-wrap` gives automatic
   scrollbars.
+- **Theme via `data-theme` attribute, not a class toggle** — `applyTheme()`
+  sets `document.documentElement.setAttribute("data-theme", resolveTheme())`;
+  CSS overrides live under `:root[data-theme="light"]`. "system" is resolved
+  live against `matchMedia("(prefers-color-scheme: dark)")`, with a listener
+  registered once at boot (`initThemeWatcher()`) so OS changes apply without
+  a restart — but the *stored* preference stays `"system"` rather than being
+  overwritten with whatever it last resolved to.
+- **Settings dialog is category-paned, not one long form** — mirrors macOS
+  System Settings: a `.settings-nav` list on the left toggles which
+  `.settings-panel` is visible on the right (`switchSettingsCategory()`).
+  Categories: Connections, Users and Groups, Appearance.
+- **`PRDASH_DEV_MAX_MEMBERS` dev-only env var** — `fetch_prs` truncates the
+  effective-members list to the first N (alphabetical) when set, to avoid
+  burning through the real GitHub rate limit while iterating locally. Never
+  touches persisted settings; absent in normal use.
 
 ## Verified (2026-07-31)
 
@@ -175,6 +191,12 @@ quota, not search) to return current state to the UI.
 - Sidebar show/hide toggle confirmed both directions, including the
   `sidebar-collapsed` single-column grid fallback and that the choice persists
   across app restarts via `save_ui_prefs`.
+- Categorized Settings dialog confirmed: all 3 categories switch correctly,
+  light theme renders cleanly across the whole app (main window + modal).
+  Theme toggle confirmed both ways (System → Dark → System), including live
+  re-resolution against the OS setting.
+- `PRDASH_DEV_MAX_MEMBERS=2` confirmed against real GHE data: only the first
+  2 (alphabetical) of 13 tracked members were queried (8 PRs vs. the full 64).
 - List/Card view toggle confirmed: card grid renders 3 columns at 1280px width
   and collapses to 1 column at 760px with no code change (pure CSS grid
   reflow); switching views is instant since both DOM trees stay reconciled.
