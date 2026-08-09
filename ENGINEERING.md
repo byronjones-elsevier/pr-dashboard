@@ -95,7 +95,8 @@ SettingsView = { base_url: string, has_token: bool, members: string[], groups: G
 Pr = { title, number, repo, author, url, created_at, updated_at,
        review_status: "awaiting" | "approved" | "changes_requested" }
 
-RateLimitStatus = { search_remaining: i64, search_limit: i64, search_reset: i64 }
+RateLimitStatus = { search_remaining: i64, search_limit: i64, search_reset: i64,
+                     core_remaining: i64, core_limit: i64, core_reset: i64 }
 
 FetchResult = { prs: Pr[], rate_limit: RateLimitStatus }
 ```
@@ -131,6 +132,20 @@ a 250 ms inter-member polite delay to avoid GitHub's secondary rate limit.
 
 A `GET /rate_limit` call is made before and after the fetch (uses the core API
 quota, not search) to return current state to the UI.
+
+#### Core rate-limit protection
+
+`search_issues()`'s pacing above only covers the *search* bucket (30/min),
+consumed exclusively by `fetch_prs`. Every other command — `add_group`'s team
+roster fetch, `approve_pr`, `close_pr`, `close_pr_and_delete_branch` — draws
+from the separate *core* bucket (5000/hr). These go through
+`send_with_core_backoff()`: it sends the request, and if the response is a
+403 with `X-RateLimit-Remaining: 0` and a reset time (i.e. the primary core
+limit is fully exhausted, not a permissions error or secondary/abuse limit —
+those don't carry a reliable reset time), it sleeps until `reset + 2s` and
+retries exactly once. `RateLimitStatus` now also carries `core_remaining` /
+`core_limit` / `core_reset`, surfaced in a second topbar badge ("Core API
+X/5000") right next to the existing Search API one.
 
 ## Key decisions / rationale
 
@@ -173,6 +188,13 @@ quota, not search) to return current state to the UI.
   effective-members list to the first N (alphabetical) when set, to avoid
   burning through the real GitHub rate limit while iterating locally. Never
   touches persisted settings; absent in normal use.
+- **Core rate-limit backoff retries once, not indefinitely** — a single retry
+  after sleeping to the reset time is enough for the common case (a burst of
+  actions crossing the hourly boundary); an unbounded retry loop risked
+  hanging a command forever against a token that's genuinely out of quota for
+  the rest of the hour. `send_with_core_backoff()` takes a `Fn() -> RequestBuilder`
+  (not a one-shot builder) specifically so the identical request can be
+  rebuilt and re-sent after the wait.
 
 ## Verified (2026-07-31)
 
@@ -197,6 +219,17 @@ quota, not search) to return current state to the UI.
   re-resolution against the OS setting.
 - `PRDASH_DEV_MAX_MEMBERS=2` confirmed against real GHE data: only the first
   2 (alphabetical) of 13 tracked members were queried (8 PRs vs. the full 64).
+
+## Verified (2026-08-09)
+
+- Core API badge confirmed live against real GHE data: topbar shows
+  "Core API 4995/5000 · resets in 25m" alongside the existing Search API
+  badge, both rendering correctly side by side.
+- `fetch_prs`'s non-403 path through the shared backoff pattern verified live
+  (64 PRs loaded successfully). `approve_pr`/`close_pr`/`close_pr_and_delete_branch`'s
+  use of `send_with_core_backoff()` was verified via `cargo check` and code
+  review only — deliberately not exercised live, since doing so would
+  approve/close/delete a real PR and branch in the connected GHE org.
 - List/Card view toggle confirmed: card grid renders 3 columns at 1280px width
   and collapses to 1 column at 760px with no code change (pure CSS grid
   reflow); switching views is instant since both DOM trees stay reconciled.
