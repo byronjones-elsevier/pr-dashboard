@@ -240,6 +240,110 @@ function closeConfirmModal() {
 }
 
 // ---------------------------------------------------------------------------
+// Export report (CSV / HTML)
+// ---------------------------------------------------------------------------
+function openExportModal() {
+  const count = sortedFilteredPrs().length;
+  el("export-body").textContent =
+    `Exports the ${count} pull request${count === 1 ? "" : "s"} currently ` +
+    `shown, honoring your search and filters.`;
+  el("export-modal").classList.remove("hidden");
+}
+
+function closeExportModal() {
+  el("export-modal").classList.add("hidden");
+}
+
+function csvField(value) {
+  const s = String(value ?? "");
+  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+function buildCsvReport(list) {
+  const headers = [
+    "Title",
+    "Number",
+    "Repository",
+    "Author",
+    "Review status",
+    "Created at",
+    "Updated at",
+    "URL",
+  ];
+  const rows = list.map((p) => [
+    p.title,
+    p.number,
+    p.repo,
+    p.author,
+    p.review_status,
+    p.created_at,
+    p.updated_at,
+    p.url,
+  ]);
+  return [headers, ...rows].map((r) => r.map(csvField).join(",")).join("\r\n");
+}
+
+function buildHtmlReport(list) {
+  const generated = new Date().toLocaleString();
+  const rows = list
+    .map(
+      (p) => `      <tr>
+        <td><a href="${escapeHtml(p.url)}">${escapeHtml(p.title)}</a> <span class="pr-num">#${p.number}</span></td>
+        <td>${escapeHtml(p.repo)}</td>
+        <td>${escapeHtml(p.author)}</td>
+        <td>${escapeHtml(p.review_status)}</td>
+        <td>${escapeHtml(humanAge(p.created_at))}</td>
+        <td>${escapeHtml(humanAge(p.updated_at))}</td>
+      </tr>`
+    )
+    .join("\n");
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Team PR Dashboard — Report</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 32px; color: #1a1a1a; }
+  h1 { font-size: 20px; margin-bottom: 4px; }
+  p.meta { color: #666; margin-top: 0; font-size: 13px; }
+  table { border-collapse: collapse; width: 100%; margin-top: 16px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #ddd; font-size: 13px; }
+  th { background: #f4f4f5; }
+  a { color: #2563eb; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+  <h1>Team PR Dashboard — Report</h1>
+  <p class="meta">Generated ${escapeHtml(generated)} · ${list.length} pull request${list.length === 1 ? "" : "s"}</p>
+  <table>
+    <thead>
+      <tr><th>PR</th><th>Repository</th><th>Author</th><th>Review</th><th>Age</th><th>Last activity</th></tr>
+    </thead>
+    <tbody>
+${rows}
+    </tbody>
+  </table>
+</body>
+</html>
+`;
+}
+
+async function exportReport(format) {
+  const list = sortedFilteredPrs();
+  const date = new Date().toISOString().slice(0, 10);
+  const content = format === "csv" ? buildCsvReport(list) : buildHtmlReport(list);
+  const defaultName = `pr-report-${date}.${format}`;
+  closeExportModal();
+  try {
+    const saved = await invoke("export_report", { defaultName, content });
+    if (saved) showBanner(`Report exported as ${format.toUpperCase()}.`, "info");
+  } catch (e) {
+    showBanner(`Export failed: ${String(e)}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Team management (Settings dialog) + sidebar filter list
 // ---------------------------------------------------------------------------
 function prCountFor(login) {
@@ -875,6 +979,14 @@ el("approve-modal").addEventListener("click", (e) => {
 });
 el("approve-comment").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submitApprove();
+});
+
+el("export-btn").addEventListener("click", openExportModal);
+el("export-cancel").addEventListener("click", closeExportModal);
+el("export-csv").addEventListener("click", () => exportReport("csv"));
+el("export-html").addEventListener("click", () => exportReport("html"));
+el("export-modal").addEventListener("click", (e) => {
+  if (e.target.id === "export-modal") closeExportModal();
 });
 
 el("confirm-cancel").addEventListener("click", closeConfirmModal);

@@ -65,6 +65,7 @@
               <button id="view-card-btn" class="view-toggle-btn" title="Card view">▦ Cards</button>
             </div>
             <div class="summary" id="summary"></div>
+            <button id="export-btn" class="btn ghost" title="Export the current PR list">Export</button>
           </div>
         </div>
 
@@ -229,6 +230,19 @@
         <div class="modal-actions">
           <button id="approve-cancel" class="btn ghost">Cancel</button>
           <button id="approve-submit" class="btn primary">Approve</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Export report modal -->
+    <div id="export-modal" class="modal hidden">
+      <div class="modal-card" style="width: 380px;">
+        <h2>Export report</h2>
+        <p id="export-body" class="muted" style="margin: -8px 0 20px; font-size: 13px;"></p>
+        <div class="modal-actions">
+          <button id="export-cancel" class="btn ghost">Cancel</button>
+          <button id="export-html" class="btn ghost">Export HTML</button>
+          <button id="export-csv" class="btn primary">Export CSV</button>
         </div>
       </div>
     </div>
