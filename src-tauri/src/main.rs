@@ -938,6 +938,23 @@ async fn close_pr_and_delete_branch(
     }
 }
 
+#[tauri::command]
+fn export_report(default_name: String, content: String) -> Result<bool, String> {
+    let ext = default_name.rsplit('.').next().unwrap_or("txt");
+    let filter_label = if ext == "csv" { "CSV" } else { "HTML" };
+    let path = rfd::FileDialog::new()
+        .set_file_name(&default_name)
+        .add_filter(filter_label, &[ext])
+        .save_file();
+    match path {
+        Some(p) => {
+            fs::write(&p, content).map_err(|e| e.to_string())?;
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -953,7 +970,8 @@ fn main() {
             fetch_prs,
             approve_pr,
             close_pr,
-            close_pr_and_delete_branch
+            close_pr_and_delete_branch,
+            export_report
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
