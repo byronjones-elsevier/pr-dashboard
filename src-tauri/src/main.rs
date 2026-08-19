@@ -14,6 +14,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_usage_refresh_secs() -> u32 {
+    5
+}
+
 fn default_view_mode() -> String {
     "list".to_string()
 }
@@ -51,6 +55,10 @@ struct Settings {
     view_mode: String,
     #[serde(default = "default_theme")]
     theme: String,
+    // How often (seconds) the sidebar's "resets in" countdown re-renders.
+    // Purely local — re-paints the last fetched numbers, never makes a call.
+    #[serde(default = "default_usage_refresh_secs")]
+    usage_refresh_secs: u32,
 }
 
 /// Union of individually-added members and every group's roster, deduped
@@ -81,6 +89,7 @@ struct SettingsView {
     sidebar_visible: bool,
     view_mode: String,
     theme: String,
+    usage_refresh_secs: u32,
 }
 
 impl From<&Settings> for SettingsView {
@@ -100,6 +109,11 @@ impl From<&Settings> for SettingsView {
                 default_theme()
             } else {
                 s.theme.clone()
+            },
+            usage_refresh_secs: if s.usage_refresh_secs == 0 {
+                default_usage_refresh_secs()
+            } else {
+                s.usage_refresh_secs
             },
         }
     }
@@ -525,10 +539,14 @@ fn save_connection(
     app: tauri::AppHandle,
     base_url: String,
     token: String,
+    usage_refresh_secs: Option<u32>,
 ) -> Result<SettingsView, String> {
     let mut s = read_settings(&app);
     let old_url = s.base_url.clone();
     s.base_url = base_url.trim().to_string();
+    if let Some(secs) = usage_refresh_secs {
+        s.usage_refresh_secs = secs.clamp(1, 300);
+    }
 
     if !token.trim().is_empty() {
         s.token = token.trim().to_string();

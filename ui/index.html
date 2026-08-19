@@ -164,6 +164,23 @@
                   keychain.</small
                 >
               </label>
+              <label class="field">
+                <span>API usage refresh interval</span>
+                <div class="refresh-row">
+                  <input
+                    id="usage-refresh-secs"
+                    type="number"
+                    min="1"
+                    max="300"
+                    style="width: 80px;"
+                  />
+                  <span class="muted" style="font-size: 13px;">seconds</span>
+                </div>
+                <small class="muted"
+                  >How often the "resets in" countdown re-renders. Purely
+                  local — doesn't make an API call.</small
+                >
+              </label>
             </section>
 
             <section class="settings-panel hidden" data-panel="users-groups">

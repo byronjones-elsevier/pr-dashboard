@@ -76,7 +76,7 @@ camelCase args to Rust snake_case.
 | Command | Args (JS) | Returns | Notes |
 |---|---|---|---|
 | `get_settings` | – | `SettingsView` | Token never sent to UI |
-| `save_connection` | `{ baseUrl, token }` | `SettingsView` | Empty `token` keeps the saved one |
+| `save_connection` | `{ baseUrl, token, usageRefreshSecs? }` | `SettingsView` | Empty `token` keeps the saved one; `usageRefreshSecs` clamped 1-300 |
 | `get_members` | – | `string[]` | Effective (deduped union of individual + group) members |
 | `add_member` | `{ login }` | `SettingsView` | Strips `@`, case-insensitive dedupe, sorted |
 | `remove_member` | `{ login }` | `SettingsView` | Only removes from the individual list |
@@ -95,7 +95,7 @@ Group = { slug: string, members: string[] }   // slug is "org/team-slug"
 
 SettingsView = { base_url: string, has_token: bool, members: string[], groups: Group[],
                   sidebar_visible: bool, view_mode: "list" | "card",
-                  theme: "light" | "dark" | "system" }
+                  theme: "light" | "dark" | "system", usage_refresh_secs: u32 }
 
 Pr = { title, number, repo, author, url, created_at, updated_at,
        review_status: "awaiting" | "approved" | "changes_requested" }
@@ -184,7 +184,12 @@ X/5000") right next to the existing Search API one.
   Core API): fill width = % of quota used, color escalates
   accent → amber → red at the same low/critical thresholds the old topbar
   badges used. It reads "No data yet" until the first Fetch, since checking
-  usage live would itself require a background poll.
+  usage live would itself require a background poll. The "resets in"
+  countdown does tick live, via `scheduleUsageTick()` — a `setInterval`
+  (period: Settings' `usage_refresh_secs`, default 5s) that just re-renders
+  `lastRateLimit` against the current clock. It never calls `invoke()`, so
+  it doesn't violate the no-automatic-API-calls rule above; it only makes
+  the *displayed* countdown honest between fetches.
 - **Keyed DOM reconciliation** — `renderTable()` uses a shared `reconcileKeyed()`
   helper (keyed by PR URL) for both the table body and the card grid. On
   refresh: unchanged nodes are skipped entirely, changed ones updated in

@@ -17,6 +17,8 @@ let sortDir = "asc"; // asc = oldest first
 let needsAttentionOnly = false;
 let searchText = "";
 let lastRateLimit = null; // RateLimitStatus from last fetch_prs call
+let usageTickMs = 5000; // updated from settings on load
+let usageTickTimer = null;
 let sidebarVisible = true;
 let viewMode = "list"; // "list" | "card"
 let theme = "system"; // "light" | "dark" | "system"
@@ -140,18 +142,28 @@ function updateSearchUsageMeter(rl) {
     searchUsageSub.textContent = "No data yet — click Fetch.";
     return;
   }
-  const { search_remaining, search_limit, search_reset } = rl;
-  const used = Math.max(0, search_limit - search_remaining);
+  const { search_limit, search_reset } = rl;
+  const now = Math.floor(Date.now() / 1000);
+  // GitHub's search quota is a fixed window, not a sliding average — once
+  // real time passes the recorded reset, the true remaining quota is back
+  // to the full limit even though we haven't re-fetched. Project that
+  // locally instead of leaving the bar/counter frozen at stale numbers.
+  const windowElapsed = search_reset > 0 && now >= search_reset;
+  const remaining = windowElapsed ? search_limit : rl.search_remaining;
+  const used = Math.max(0, search_limit - remaining);
   const needed = resolvedSelectedLogins().length * 3;
-  const low = search_remaining < Math.max(needed * 2, 6); // < 2 fetches left
-  const critical = search_remaining < needed;             // < 1 fetch left
+  const low = remaining < Math.max(needed * 2, 6); // < 2 fetches left
+  const critical = remaining < needed;             // < 1 fetch left
 
   searchUsageValue.textContent = `${used} / ${search_limit} used`;
   setMeterFill(searchUsageFill, search_limit > 0 ? (used / search_limit) * 100 : 0, critical, low);
 
-  const now = Math.floor(Date.now() / 1000);
   const resetIn = Math.max(0, search_reset - now);
-  searchUsageSub.textContent = resetIn > 0 ? `Resets in ${resetIn}s` : "";
+  searchUsageSub.textContent = windowElapsed
+    ? "Full quota available"
+    : resetIn > 0
+    ? `Resets in ${resetIn}s`
+    : "";
 }
 
 // Core API (5000/hr) backs every non-search call: team imports, approve/
@@ -164,17 +176,35 @@ function updateCoreUsageMeter(rl) {
     coreUsageSub.textContent = "";
     return;
   }
-  const { core_remaining, core_limit, core_reset } = rl;
-  const used = Math.max(0, core_limit - core_remaining);
-  const low = core_remaining < 100;
-  const critical = core_remaining < 10;
+  const { core_limit, core_reset } = rl;
+  const now = Math.floor(Date.now() / 1000);
+  // Same fixed-window projection as the search meter above.
+  const windowElapsed = core_reset > 0 && now >= core_reset;
+  const remaining = windowElapsed ? core_limit : rl.core_remaining;
+  const used = Math.max(0, core_limit - remaining);
+  const low = remaining < 100;
+  const critical = remaining < 10;
 
   coreUsageValue.textContent = `${used} / ${core_limit} used`;
   setMeterFill(coreUsageFill, core_limit > 0 ? (used / core_limit) * 100 : 0, critical, low);
 
-  const now = Math.floor(Date.now() / 1000);
   const resetIn = Math.max(0, core_reset - now);
-  coreUsageSub.textContent = resetIn > 0 ? `Resets in ${Math.ceil(resetIn / 60)}m` : "";
+  coreUsageSub.textContent = windowElapsed
+    ? "Full quota available"
+    : resetIn > 0
+    ? `Resets in ${Math.ceil(resetIn / 60)}m`
+    : "";
+}
+
+// Re-renders both meters against the last fetched numbers on a timer, so the
+// "resets in" countdown ticks down live. This never calls invoke() — it's a
+// local repaint of lastRateLimit against the current clock, not a new fetch.
+function scheduleUsageTick() {
+  clearInterval(usageTickTimer);
+  usageTickTimer = setInterval(() => {
+    updateSearchUsageMeter(lastRateLimit);
+    updateCoreUsageMeter(lastRateLimit);
+  }, usageTickMs);
 }
 
 // ---------------------------------------------------------------------------
@@ -787,6 +817,7 @@ function openSettings() {
   el("token").placeholder = window.__cfg?.has_token
     ? "•••••••• (leave blank to keep saved token)"
     : "ghp_…";
+  el("usage-refresh-secs").value = window.__cfg?.usage_refresh_secs ?? 5;
   switchSettingsCategory("connections");
   el("settings-modal").classList.remove("hidden");
 }
@@ -797,12 +828,22 @@ function closeSettings() {
 async function saveSettings() {
   const base_url = el("base-url").value.trim();
   const token = el("token").value;
+  const usageRefreshSecs = parseInt(el("usage-refresh-secs").value, 10);
   if (!base_url) {
     showBanner("Enter your GitHub host.");
     return;
   }
+  if (Number.isNaN(usageRefreshSecs) || usageRefreshSecs < 1) {
+    showBanner("API usage refresh interval must be at least 1 second.");
+    return;
+  }
   try {
-    window.__cfg = await invoke("save_connection", { baseUrl: base_url, token });
+    window.__cfg = await invoke("save_connection", {
+      baseUrl: base_url,
+      token,
+      usageRefreshSecs,
+    });
+    scheduleUsageTick();
     closeSettings();
     clearBanner();
   } catch (e) {
@@ -1038,6 +1079,7 @@ async function init() {
     sidebarVisible = window.__cfg.sidebar_visible ?? true;
     viewMode = window.__cfg.view_mode || "list";
     theme = window.__cfg.theme || "system";
+    usageTickMs = (window.__cfg.usage_refresh_secs ?? 5) * 1000;
     applySidebarVisibility();
     applyViewMode();
     applyTheme();
@@ -1046,6 +1088,7 @@ async function init() {
     updateSearchUsageMeter(null);
     updateCoreUsageMeter(null);
     renderTable();
+    scheduleUsageTick();
 
     if (!window.__cfg.base_url || !window.__cfg.has_token) {
       openSettings();
