@@ -843,6 +843,7 @@ async function saveSettings() {
       token,
       usageRefreshSecs,
     });
+    usageTickMs = window.__cfg.usage_refresh_secs * 1000;
     scheduleUsageTick();
     closeSettings();
     clearBanner();
