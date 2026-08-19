@@ -10,12 +10,12 @@ use tauri::Manager;
 // Persisted configuration
 // ---------------------------------------------------------------------------
 
-fn default_refresh_mins() -> u32 {
-    10
-}
-
 fn default_true() -> bool {
     true
+}
+
+fn default_usage_refresh_secs() -> u32 {
+    5
 }
 
 fn default_view_mode() -> String {
@@ -49,14 +49,16 @@ struct Settings {
     members: Vec<String>,
     #[serde(default)]
     groups: Vec<Group>,
-    #[serde(default = "default_refresh_mins")]
-    refresh_interval_mins: u32,
     #[serde(default = "default_true")]
     sidebar_visible: bool,
     #[serde(default = "default_view_mode")]
     view_mode: String,
     #[serde(default = "default_theme")]
     theme: String,
+    // How often (seconds) the sidebar's "resets in" countdown re-renders.
+    // Purely local — re-paints the last fetched numbers, never makes a call.
+    #[serde(default = "default_usage_refresh_secs")]
+    usage_refresh_secs: u32,
 }
 
 /// Union of individually-added members and every group's roster, deduped
@@ -64,7 +66,11 @@ struct Settings {
 fn effective_members(s: &Settings) -> Vec<String> {
     let mut seen: HashSet<String> = HashSet::new();
     let mut out = Vec::new();
-    for login in s.members.iter().chain(s.groups.iter().flat_map(|g| g.members.iter())) {
+    for login in s
+        .members
+        .iter()
+        .chain(s.groups.iter().flat_map(|g| g.members.iter()))
+    {
         let key = login.to_lowercase();
         if seen.insert(key) {
             out.push(login.clone());
@@ -80,10 +86,10 @@ struct SettingsView {
     has_token: bool,
     members: Vec<String>,
     groups: Vec<Group>,
-    refresh_interval_mins: u32,
     sidebar_visible: bool,
     view_mode: String,
     theme: String,
+    usage_refresh_secs: u32,
 }
 
 impl From<&Settings> for SettingsView {
@@ -93,11 +99,6 @@ impl From<&Settings> for SettingsView {
             has_token: !s.token.trim().is_empty(),
             members: s.members.clone(),
             groups: s.groups.clone(),
-            refresh_interval_mins: if s.refresh_interval_mins == 0 {
-                default_refresh_mins()
-            } else {
-                s.refresh_interval_mins
-            },
             sidebar_visible: s.sidebar_visible,
             view_mode: if s.view_mode.is_empty() {
                 default_view_mode()
@@ -108,6 +109,11 @@ impl From<&Settings> for SettingsView {
                 default_theme()
             } else {
                 s.theme.clone()
+            },
+            usage_refresh_secs: if s.usage_refresh_secs == 0 {
+                default_usage_refresh_secs()
+            } else {
+                s.usage_refresh_secs
             },
         }
     }
@@ -288,10 +294,16 @@ fn is_core_rate_limited(resp: &reqwest::Response) -> Option<u64> {
 async fn send_with_core_backoff(
     build: impl Fn() -> reqwest::RequestBuilder,
 ) -> Result<reqwest::Response, String> {
-    let resp = build().send().await.map_err(|e| format!("Request failed: {e}"))?;
+    let resp = build()
+        .send()
+        .await
+        .map_err(|e| format!("Request failed: {e}"))?;
     if let Some(wait_secs) = is_core_rate_limited(&resp) {
         tokio::time::sleep(tokio::time::Duration::from_secs(wait_secs)).await;
-        return build().send().await.map_err(|e| format!("Request failed: {e}"));
+        return build()
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {e}"));
     }
     Ok(resp)
 }
@@ -342,10 +354,18 @@ async fn search_issues(
 
         // Capture rate-limit headers before consuming the body.
         if let Some(v) = resp.headers().get("x-ratelimit-remaining") {
-            rate_remaining = v.to_str().ok().and_then(|s| s.parse().ok()).unwrap_or(rate_remaining);
+            rate_remaining = v
+                .to_str()
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(rate_remaining);
         }
         if let Some(v) = resp.headers().get("x-ratelimit-reset") {
-            rate_reset = v.to_str().ok().and_then(|s| s.parse().ok()).unwrap_or(rate_reset);
+            rate_reset = v
+                .to_str()
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(rate_reset);
         }
 
         let status = resp.status();
@@ -373,7 +393,11 @@ async fn search_issues(
         }
         page += 1;
     }
-    Ok(SearchResponse { items: out, rate_remaining, rate_reset })
+    Ok(SearchResponse {
+        items: out,
+        rate_remaining,
+        rate_reset,
+    })
 }
 
 /// Paginate a list endpoint that returns a top-level JSON array (e.g. team members).
@@ -515,13 +539,13 @@ fn save_connection(
     app: tauri::AppHandle,
     base_url: String,
     token: String,
-    refresh_interval_mins: Option<u32>,
+    usage_refresh_secs: Option<u32>,
 ) -> Result<SettingsView, String> {
     let mut s = read_settings(&app);
     let old_url = s.base_url.clone();
     s.base_url = base_url.trim().to_string();
-    if let Some(mins) = refresh_interval_mins {
-        s.refresh_interval_mins = mins.max(1);
+    if let Some(secs) = usage_refresh_secs {
+        s.usage_refresh_secs = secs.clamp(1, 300);
     }
 
     if !token.trim().is_empty() {
@@ -615,10 +639,17 @@ async fn add_group(app: tauri::AppHandle, team_slug: String) -> Result<SettingsV
     }
 
     let mut s = read_settings(&app);
-    if let Some(g) = s.groups.iter_mut().find(|g| g.slug.eq_ignore_ascii_case(&slug)) {
+    if let Some(g) = s
+        .groups
+        .iter_mut()
+        .find(|g| g.slug.eq_ignore_ascii_case(&slug))
+    {
         g.members = logins;
     } else {
-        s.groups.push(Group { slug, members: logins });
+        s.groups.push(Group {
+            slug,
+            members: logins,
+        });
     }
     s.groups.sort_by_key(|g| g.slug.to_lowercase());
     write_settings(&app, &s)?;
@@ -628,7 +659,8 @@ async fn add_group(app: tauri::AppHandle, team_slug: String) -> Result<SettingsV
 #[tauri::command]
 fn remove_group(app: tauri::AppHandle, slug: String) -> Result<SettingsView, String> {
     let mut s = read_settings(&app);
-    s.groups.retain(|g| !g.slug.eq_ignore_ascii_case(slug.trim()));
+    s.groups
+        .retain(|g| !g.slug.eq_ignore_ascii_case(slug.trim()));
     write_settings(&app, &s)?;
     Ok(SettingsView::from(&s))
 }
@@ -649,7 +681,10 @@ fn save_ui_prefs(
 }
 
 #[tauri::command]
-async fn fetch_prs(app: tauri::AppHandle) -> Result<FetchResult, String> {
+async fn fetch_prs(
+    app: tauri::AppHandle,
+    selected_logins: Vec<String>,
+) -> Result<FetchResult, String> {
     let s = read_settings(&app);
     if s.base_url.trim().is_empty() || s.token.trim().is_empty() {
         return Err("Set the GitHub host and token in Settings first.".into());
@@ -664,7 +699,13 @@ async fn fetch_prs(app: tauri::AppHandle) -> Result<FetchResult, String> {
     // Fetch initial rate-limit state (uses the core API, not the search quota).
     let initial_rl = fetch_rate_limit(&client, &api, &s.token).await?;
 
-    let mut members = effective_members(&s);
+    // Only query members explicitly selected in the sidebar — the frontend
+    // resolves group membership into concrete logins before calling this.
+    let selected: HashSet<String> = selected_logins.iter().map(|m| m.to_lowercase()).collect();
+    let mut members: Vec<String> = effective_members(&s)
+        .into_iter()
+        .filter(|m| selected.contains(&m.to_lowercase()))
+        .collect();
     // Dev-only knob: cap how many members get queried, to burn through less
     // of the real rate limit while iterating locally. Never touches
     // persisted settings; unset in normal use.
@@ -674,7 +715,10 @@ async fn fetch_prs(app: tauri::AppHandle) -> Result<FetchResult, String> {
         }
     }
     if members.is_empty() {
-        return Ok(FetchResult { prs: vec![], rate_limit: initial_rl });
+        return Ok(FetchResult {
+            prs: vec![],
+            rate_limit: initial_rl,
+        });
     }
 
     // Track remaining search quota from response headers so we can sleep
@@ -701,8 +745,12 @@ async fn fetch_prs(app: tauri::AppHandle) -> Result<FetchResult, String> {
 
         // Three sequential search calls per member; pace between each one.
         let r1 = search_issues(&client, &api, &s.token, &base_q).await?;
-        if r1.rate_remaining >= 0 { remaining = r1.rate_remaining; }
-        if r1.rate_reset > 0 { reset_at = r1.rate_reset; }
+        if r1.rate_remaining >= 0 {
+            remaining = r1.rate_remaining;
+        }
+        if r1.rate_reset > 0 {
+            reset_at = r1.rate_reset;
+        }
 
         if remaining < 3 && remaining >= 0 {
             let wait = ((reset_at - unix_now()) + 2).max(1) as u64;
@@ -711,11 +759,18 @@ async fn fetch_prs(app: tauri::AppHandle) -> Result<FetchResult, String> {
         }
 
         let r2 = search_issues(
-            &client, &api, &s.token,
+            &client,
+            &api,
+            &s.token,
             &format!("{} review:changes_requested", base_q),
-        ).await?;
-        if r2.rate_remaining >= 0 { remaining = r2.rate_remaining; }
-        if r2.rate_reset > 0 { reset_at = r2.rate_reset; }
+        )
+        .await?;
+        if r2.rate_remaining >= 0 {
+            remaining = r2.rate_remaining;
+        }
+        if r2.rate_reset > 0 {
+            reset_at = r2.rate_reset;
+        }
 
         if remaining < 3 && remaining >= 0 {
             let wait = ((reset_at - unix_now()) + 2).max(1) as u64;
@@ -724,11 +779,18 @@ async fn fetch_prs(app: tauri::AppHandle) -> Result<FetchResult, String> {
         }
 
         let r3 = search_issues(
-            &client, &api, &s.token,
+            &client,
+            &api,
+            &s.token,
             &format!("{} review:approved", base_q),
-        ).await?;
-        if r3.rate_remaining >= 0 { remaining = r3.rate_remaining; }
-        if r3.rate_reset > 0 { reset_at = r3.rate_reset; }
+        )
+        .await?;
+        if r3.rate_remaining >= 0 {
+            remaining = r3.rate_remaining;
+        }
+        if r3.rate_reset > 0 {
+            reset_at = r3.rate_reset;
+        }
 
         let items = r1.items;
         let changes_set = url_set(&r2.items);
@@ -796,10 +858,21 @@ async fn fetch_prs(app: tauri::AppHandle) -> Result<FetchResult, String> {
     let mut prs: Vec<Pr> = by_url.into_values().collect();
     prs.sort_by(|a, b| a.created_at.cmp(&b.created_at));
 
-    // Re-fetch rate limit so the UI shows the state *after* consuming quota.
-    let rate_limit = fetch_rate_limit(&client, &api, &s.token)
-        .await
-        .unwrap_or(initial_rl);
+    // Report search quota from the headers of the search calls just made
+    // (`remaining`/`reset_at`, tracked live above) rather than re-querying
+    // `/rate_limit` — that endpoint can lag a few seconds behind just-consumed
+    // search quota, which made the UI show "0 used" right after a fetch that
+    // clearly cost calls. Core quota didn't move during this command (only
+    // the exempt `/rate_limit` call above touched it), so `initial_rl` still
+    // holds its current value.
+    let rate_limit = RateLimitStatus {
+        search_remaining: remaining.max(0),
+        search_limit: initial_rl.search_limit,
+        search_reset: reset_at,
+        core_remaining: initial_rl.core_remaining,
+        core_limit: initial_rl.core_limit,
+        core_reset: initial_rl.core_reset,
+    };
 
     Ok(FetchResult { prs, rate_limit })
 }
@@ -838,11 +911,7 @@ async fn approve_pr(
 }
 
 #[tauri::command]
-async fn close_pr(
-    app: tauri::AppHandle,
-    owner_repo: String,
-    pr_number: i64,
-) -> Result<(), String> {
+async fn close_pr(app: tauri::AppHandle, owner_repo: String, pr_number: i64) -> Result<(), String> {
     let s = read_settings(&app);
     let api = api_base(&s.base_url);
     if api.is_empty() || s.token.trim().is_empty() {

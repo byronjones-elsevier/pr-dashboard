@@ -17,14 +17,15 @@ let sortDir = "asc"; // asc = oldest first
 let needsAttentionOnly = false;
 let searchText = "";
 let lastRateLimit = null; // RateLimitStatus from last fetch_prs call
-let autoRefreshMs = 10 * 60 * 1000; // updated from settings on load
-let autoRefreshTimer = null;
+let usageTickMs = 5000; // updated from settings on load
+let usageTickTimer = null;
 let sidebarVisible = true;
 let viewMode = "list"; // "list" | "card"
 let theme = "system"; // "light" | "dark" | "system"
 let systemThemeMedia = null;
 // Selected filter keys: "user:<login>" or "group:<slug>" (lowercased).
-// Empty = no filter applied (show every tracked PR).
+// Empty = nothing selected — fetchPrs() won't query anyone until the user
+// checks at least one box.
 let filterSelection = new Set();
 
 const STALE_DAYS = 7;
@@ -45,9 +46,13 @@ const loadingOverlay = el("loading-overlay");
 const banner = el("status-banner");
 const summary = el("summary");
 const lastRefresh = el("last-refresh");
-const refreshBtn = el("refresh-btn");
-const rateLimitBadge = el("rate-limit-badge");
-const coreRateLimitBadge = el("core-rate-limit-badge");
+const fetchBtn = el("fetch-btn");
+const searchUsageValue = el("search-usage-value");
+const searchUsageFill = el("search-usage-fill");
+const searchUsageSub = el("search-usage-sub");
+const coreUsageValue = el("core-usage-value");
+const coreUsageFill = el("core-usage-fill");
+const coreUsageSub = el("core-usage-sub");
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -124,59 +129,82 @@ function reviewBadge(status) {
   }
 }
 
-function updateRateLimitBadge(rl) {
+// Fill a meter track: width = % of quota used, color escalates with severity.
+function setMeterFill(fillEl, usedPct, critical, low) {
+  fillEl.style.width = `${Math.max(0, Math.min(100, usedPct))}%`;
+  fillEl.className = critical ? "meter-fill critical" : low ? "meter-fill low" : "meter-fill";
+}
+
+function updateSearchUsageMeter(rl) {
   if (!rl) {
-    rateLimitBadge.classList.add("hidden");
+    searchUsageValue.textContent = "—";
+    setMeterFill(searchUsageFill, 0, false, false);
+    searchUsageSub.textContent = "No data yet — click Fetch.";
     return;
   }
-  const { search_remaining, search_limit, search_reset } = rl;
-  const needed = effectiveLogins().length * 3;
-  const pct = search_limit > 0 ? search_remaining / search_limit : 1;
-  const low = search_remaining < Math.max(needed * 2, 6); // < 2 refreshes left
-  const critical = search_remaining < needed;             // < 1 refresh left
-
-  let cls = "rate-limit-badge";
-  if (critical) cls += " critical";
-  else if (low) cls += " low";
-
+  const { search_limit, search_reset } = rl;
   const now = Math.floor(Date.now() / 1000);
+  // GitHub's search quota is a fixed window, not a sliding average — once
+  // real time passes the recorded reset, the true remaining quota is back
+  // to the full limit even though we haven't re-fetched. Project that
+  // locally instead of leaving the bar/counter frozen at stale numbers.
+  const windowElapsed = search_reset > 0 && now >= search_reset;
+  const remaining = windowElapsed ? search_limit : rl.search_remaining;
+  const used = Math.max(0, search_limit - remaining);
+  const needed = resolvedSelectedLogins().length * 3;
+  const low = remaining < Math.max(needed * 2, 6); // < 2 fetches left
+  const critical = remaining < needed;             // < 1 fetch left
+
+  searchUsageValue.textContent = `${used} / ${search_limit} used`;
+  setMeterFill(searchUsageFill, search_limit > 0 ? (used / search_limit) * 100 : 0, critical, low);
+
   const resetIn = Math.max(0, search_reset - now);
-  const resetStr = resetIn > 0 ? ` · resets in ${resetIn}s` : "";
-  rateLimitBadge.className = cls;
-  rateLimitBadge.textContent = `Search API ${search_remaining}/${search_limit}${resetStr}`;
-  rateLimitBadge.title = critical
-    ? "Rate limit critical — auto-refresh paused until quota recovers."
-    : low
-    ? "Rate limit low — auto-refresh may be skipped."
-    : "GitHub Search API quota";
+  searchUsageSub.textContent = windowElapsed
+    ? "Full quota available"
+    : resetIn > 0
+    ? `Resets in ${resetIn}s`
+    : "";
 }
 
 // Core API (5000/hr) backs every non-search call: team imports, approve/
 // close/delete-branch. Thresholds are flat (not team-size-scaled like
 // search's) since a single action only ever costs a handful of calls.
-function updateCoreRateLimitBadge(rl) {
+function updateCoreUsageMeter(rl) {
   if (!rl) {
-    coreRateLimitBadge.classList.add("hidden");
+    coreUsageValue.textContent = "—";
+    setMeterFill(coreUsageFill, 0, false, false);
+    coreUsageSub.textContent = "";
     return;
   }
-  const { core_remaining, core_limit, core_reset } = rl;
-  const low = core_remaining < 100;
-  const critical = core_remaining < 10;
-
-  let cls = "rate-limit-badge";
-  if (critical) cls += " critical";
-  else if (low) cls += " low";
-
+  const { core_limit, core_reset } = rl;
   const now = Math.floor(Date.now() / 1000);
+  // Same fixed-window projection as the search meter above.
+  const windowElapsed = core_reset > 0 && now >= core_reset;
+  const remaining = windowElapsed ? core_limit : rl.core_remaining;
+  const used = Math.max(0, core_limit - remaining);
+  const low = remaining < 100;
+  const critical = remaining < 10;
+
+  coreUsageValue.textContent = `${used} / ${core_limit} used`;
+  setMeterFill(coreUsageFill, core_limit > 0 ? (used / core_limit) * 100 : 0, critical, low);
+
   const resetIn = Math.max(0, core_reset - now);
-  const resetStr = resetIn > 0 ? ` · resets in ${Math.ceil(resetIn / 60)}m` : "";
-  coreRateLimitBadge.className = cls;
-  coreRateLimitBadge.textContent = `Core API ${core_remaining}/${core_limit}${resetStr}`;
-  coreRateLimitBadge.title = critical
-    ? "Core rate limit critical — actions (approve/close/import) will pause and retry automatically."
-    : low
-    ? "Core rate limit low."
-    : "GitHub core API quota (team imports, approve/close/delete-branch)";
+  coreUsageSub.textContent = windowElapsed
+    ? "Full quota available"
+    : resetIn > 0
+    ? `Resets in ${Math.ceil(resetIn / 60)}m`
+    : "";
+}
+
+// Re-renders both meters against the last fetched numbers on a timer, so the
+// "resets in" countdown ticks down live. This never calls invoke() — it's a
+// local repaint of lastRateLimit against the current clock, not a new fetch.
+function scheduleUsageTick() {
+  clearInterval(usageTickTimer);
+  usageTickTimer = setInterval(() => {
+    updateSearchUsageMeter(lastRateLimit);
+    updateCoreUsageMeter(lastRateLimit);
+  }, usageTickMs);
 }
 
 // ---------------------------------------------------------------------------
@@ -217,7 +245,9 @@ async function submitApprove() {
     await invoke("approve_pr", { ownerRepo, prNumber, comment });
     closeApproveModal();
     showBanner(`Approved PR #${prNumber}.`, "info");
-    await refresh();
+    const pr = prs.find((p) => p.repo === ownerRepo && p.number === prNumber);
+    if (pr) pr.review_status = "approved";
+    renderTable();
   } catch (e) {
     showBanner(String(e));
     closeApproveModal();
@@ -422,7 +452,6 @@ function renderSidebarFilter() {
 async function addMember(login) {
   try {
     applyTeamUpdate(await invoke("add_member", { login }));
-    await refresh();
   } catch (e) {
     showBanner(String(e));
   }
@@ -440,23 +469,25 @@ async function removeMember(login) {
 
 async function addGroup(teamSlug) {
   applyTeamUpdate(await invoke("add_group", { teamSlug }));
-  await refresh();
 }
 
 async function removeGroup(slug) {
   try {
     applyTeamUpdate(await invoke("remove_group", { slug }));
-    await refresh();
+    // No re-fetch — just drop any cached PRs that are no longer tracked
+    // by anyone (individually or via another group).
+    const stillTracked = new Set(effectiveLogins().map((m) => m.toLowerCase()));
+    prs = prs.filter((p) => stillTracked.has(p.author.toLowerCase()));
+    renderTable();
   } catch (e) {
     showBanner(String(e));
   }
 }
 
 // Expands the sidebar filter selection (users + groups) into the set of
-// logins it resolves to. Returns null when nothing is selected, meaning
-// "no filter" rather than "match nobody".
+// logins it resolves to (lowercased). Empty selection resolves to an empty
+// set — nothing selected means nothing shown and nothing fetched.
 function selectedLogins() {
-  if (filterSelection.size === 0) return null;
   const out = new Set();
   for (const m of members) {
     if (filterSelection.has(`user:${m.toLowerCase()}`)) out.add(m.toLowerCase());
@@ -469,6 +500,23 @@ function selectedLogins() {
   return out;
 }
 
+// Same resolution as selectedLogins(), but returns the original-cased login
+// strings — this is what gets sent to fetch_prs as the scope of the query.
+function resolvedSelectedLogins() {
+  const out = new Map(); // lowercase -> original case
+  for (const m of members) {
+    if (filterSelection.has(`user:${m.toLowerCase()}`)) out.set(m.toLowerCase(), m);
+  }
+  for (const g of groups) {
+    if (filterSelection.has(`group:${g.slug.toLowerCase()}`)) {
+      for (const m of g.members) {
+        if (!out.has(m.toLowerCase())) out.set(m.toLowerCase(), m);
+      }
+    }
+  }
+  return Array.from(out.values());
+}
+
 // ---------------------------------------------------------------------------
 // PR table
 // ---------------------------------------------------------------------------
@@ -476,9 +524,7 @@ function sortedFilteredPrs() {
   let list = prs.slice();
 
   const logins = selectedLogins();
-  if (logins) {
-    list = list.filter((p) => logins.has(p.author.toLowerCase()));
-  }
+  list = list.filter((p) => logins.has(p.author.toLowerCase()));
 
   // "Needs attention" = awaiting review or changes have been requested.
   if (needsAttentionOnly) {
@@ -653,13 +699,17 @@ function reconcileKeyed(container, list, makeFn, syncFn) {
 function renderTable() {
   const list = sortedFilteredPrs();
 
-  // Summary bar
-  const awaiting = prs.filter((p) => p.review_status === "awaiting").length;
-  const changes = prs.filter((p) => p.review_status === "changes_requested").length;
-  const approved = prs.filter((p) => p.review_status === "approved").length;
+  // Summary bar — scoped to the current selection (not needsAttention/search,
+  // which only narrow the table below), so it never reports stale totals for
+  // members that have since been deselected.
+  const selected = selectedLogins();
+  const scoped = prs.filter((p) => selected.has(p.author.toLowerCase()));
+  const awaiting = scoped.filter((p) => p.review_status === "awaiting").length;
+  const changes = scoped.filter((p) => p.review_status === "changes_requested").length;
+  const approved = scoped.filter((p) => p.review_status === "approved").length;
   const trackedCount = effectiveLogins().length;
-  if (trackedCount) {
-    const parts = [`${prs.length} open PR${prs.length === 1 ? "" : "s"}`];
+  if (trackedCount && filterSelection.size > 0) {
+    const parts = [`${scoped.length} open PR${scoped.length === 1 ? "" : "s"}`];
     if (awaiting) parts.push(`${awaiting} awaiting`);
     if (changes) parts.push(`${changes} changes requested`);
     if (approved) parts.push(`${approved} approved`);
@@ -673,6 +723,10 @@ function renderTable() {
     emptyState.classList.remove("hidden");
     emptyState.textContent =
       "Add users or groups in Settings to see their open pull requests.";
+  } else if (filterSelection.size === 0) {
+    emptyState.classList.remove("hidden");
+    emptyState.textContent =
+      "Select users or groups in the sidebar, then click Fetch to load their pull requests.";
   } else if (list.length === 0) {
     emptyState.classList.remove("hidden");
     emptyState.textContent = prs.length
@@ -689,22 +743,8 @@ function renderTable() {
 }
 
 // ---------------------------------------------------------------------------
-// Refresh
+// Fetch
 // ---------------------------------------------------------------------------
-
-// Schedules the next auto-refresh to fire autoRefreshMs after THIS call
-// returns — i.e. the countdown only begins once the previous fetch is done.
-function scheduleNextRefresh() {
-  clearTimeout(autoRefreshTimer);
-  autoRefreshTimer = setTimeout(async () => {
-    const needed = effectiveLogins().length * 3;
-    const rateLimitOk = !lastRateLimit || lastRateLimit.search_remaining >= needed;
-    if (!refreshBtn.disabled && effectiveLogins().length > 0 && rateLimitOk) {
-      await refresh();
-    }
-    scheduleNextRefresh();
-  }, autoRefreshMs);
-}
 
 // Shown only while there's nothing on screen yet to reconcile against —
 // i.e. the very first fetch, or any refresh starting from an empty table.
@@ -719,24 +759,31 @@ function setLoading(flag) {
   }
 }
 
-async function refresh() {
-  if (effectiveLogins().length === 0) {
+async function fetchPrs() {
+  const logins = resolvedSelectedLogins();
+  if (logins.length === 0) {
     prs = [];
+    lastRateLimit = null;
+    updateSearchUsageMeter(null);
+    updateCoreUsageMeter(null);
+    if (effectiveLogins().length > 0) {
+      showBanner("Select at least one user or group, then click Fetch.", "info");
+    }
     renderTable();
     renderSidebarFilter();
     return;
   }
   const showingLoader = prs.length === 0;
   if (showingLoader) setLoading(true);
-  refreshBtn.disabled = true;
-  refreshBtn.textContent = "Loading…";
+  fetchBtn.disabled = true;
+  fetchBtn.textContent = "Fetching…";
   clearBanner();
   try {
-    const result = await invoke("fetch_prs");
+    const result = await invoke("fetch_prs", { selectedLogins: logins });
     prs = result.prs;
     lastRateLimit = result.rate_limit;
-    updateRateLimitBadge(lastRateLimit);
-    updateCoreRateLimitBadge(lastRateLimit);
+    updateSearchUsageMeter(lastRateLimit);
+    updateCoreUsageMeter(lastRateLimit);
     lastRefresh.textContent = `Updated ${new Date().toLocaleTimeString()}`;
   } catch (e) {
     showBanner(String(e));
@@ -747,8 +794,8 @@ async function refresh() {
     }
     renderTable();
     renderSidebarFilter();
-    refreshBtn.disabled = false;
-    refreshBtn.textContent = "Refresh";
+    fetchBtn.disabled = false;
+    fetchBtn.textContent = "Fetch";
   }
 }
 
@@ -770,7 +817,7 @@ function openSettings() {
   el("token").placeholder = window.__cfg?.has_token
     ? "•••••••• (leave blank to keep saved token)"
     : "ghp_…";
-  el("refresh-mins").value = window.__cfg?.refresh_interval_mins ?? 10;
+  el("usage-refresh-secs").value = window.__cfg?.usage_refresh_secs ?? 5;
   switchSettingsCategory("connections");
   el("settings-modal").classList.remove("hidden");
 }
@@ -781,26 +828,25 @@ function closeSettings() {
 async function saveSettings() {
   const base_url = el("base-url").value.trim();
   const token = el("token").value;
-  const refreshMins = parseInt(el("refresh-mins").value, 10);
+  const usageRefreshSecs = parseInt(el("usage-refresh-secs").value, 10);
   if (!base_url) {
     showBanner("Enter your GitHub host.");
     return;
   }
-  if (Number.isNaN(refreshMins) || refreshMins < 1) {
-    showBanner("Refresh interval must be at least 1 minute.");
+  if (Number.isNaN(usageRefreshSecs) || usageRefreshSecs < 1) {
+    showBanner("API usage refresh interval must be at least 1 second.");
     return;
   }
   try {
     window.__cfg = await invoke("save_connection", {
       baseUrl: base_url,
       token,
-      refreshIntervalMins: refreshMins,
+      usageRefreshSecs,
     });
-    autoRefreshMs = window.__cfg.refresh_interval_mins * 60 * 1000;
+    usageTickMs = window.__cfg.usage_refresh_secs * 1000;
+    scheduleUsageTick();
     closeSettings();
     clearBanner();
-    await refresh();
-    scheduleNextRefresh();
   } catch (e) {
     showBanner(String(e));
   }
@@ -866,7 +912,8 @@ function handlePrContainerClick(e) {
         try {
           await invoke("close_pr", { ownerRepo: repo, prNumber: prNum });
           showBanner(`Closed PR #${prNum}.`, "info");
-          await refresh();
+          prs = prs.filter((p) => !(p.repo === repo && p.number === prNum));
+          renderTable();
         } catch (err) {
           showBanner(String(err));
         }
@@ -881,7 +928,8 @@ function handlePrContainerClick(e) {
         try {
           await invoke("close_pr_and_delete_branch", { ownerRepo: repo, prNumber: prNum });
           showBanner(`Closed PR #${prNum} and deleted branch.`, "info");
-          await refresh();
+          prs = prs.filter((p) => !(p.repo === repo && p.number === prNum));
+          renderTable();
         } catch (err) {
           showBanner(String(err));
         }
@@ -964,7 +1012,7 @@ document.querySelectorAll(".settings-nav-btn").forEach((btn) => {
   btn.addEventListener("click", () => switchSettingsCategory(btn.dataset.category));
 });
 
-el("refresh-btn").addEventListener("click", refresh);
+el("fetch-btn").addEventListener("click", fetchPrs);
 el("settings-btn").addEventListener("click", openSettings);
 el("settings-cancel").addEventListener("click", closeSettings);
 el("settings-save").addEventListener("click", saveSettings);
@@ -1032,19 +1080,19 @@ async function init() {
     sidebarVisible = window.__cfg.sidebar_visible ?? true;
     viewMode = window.__cfg.view_mode || "list";
     theme = window.__cfg.theme || "system";
+    usageTickMs = (window.__cfg.usage_refresh_secs ?? 5) * 1000;
     applySidebarVisibility();
     applyViewMode();
     applyTheme();
     renderTeamSettingsLists();
     renderSidebarFilter();
+    updateSearchUsageMeter(null);
+    updateCoreUsageMeter(null);
     renderTable();
-    autoRefreshMs = (window.__cfg.refresh_interval_mins ?? 10) * 60 * 1000;
+    scheduleUsageTick();
 
     if (!window.__cfg.base_url || !window.__cfg.has_token) {
       openSettings();
-    } else {
-      await refresh();
-      scheduleNextRefresh();
     }
   } catch (e) {
     showBanner("Failed to start: " + String(e));

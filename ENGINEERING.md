@@ -15,7 +15,12 @@ by a user-managed team, across a GitHub **Enterprise** instance.
   persisted group backed by `org/team-slug` (imports the team's current
   roster). Managed from the Settings dialog; persisted to a local config file.
 - **Sidebar filter:** collapsible sidebar lists every tracked user/group as a
-  checkbox; checking one or more narrows the PR list to their PRs.
+  checkbox. Nothing is selected by default; selection also defines the *fetch*
+  scope — `fetch_prs` only queries the users/groups explicitly checked.
+- **Explicit fetch only:** no API call happens automatically — not on boot,
+  not on an interval, not when adding/removing a member or group. The user
+  clicks **Fetch** to pull data for whatever's currently selected. Approving
+  or closing a PR updates the local state in place instead of re-fetching.
 - **List/Card view:** a toolbar toggle switches between the table and a
   responsive card grid; both are kept reconciled in the DOM simultaneously
   (see `renderTable()`) so switching is instant with no re-fetch.
@@ -71,14 +76,14 @@ camelCase args to Rust snake_case.
 | Command | Args (JS) | Returns | Notes |
 |---|---|---|---|
 | `get_settings` | – | `SettingsView` | Token never sent to UI |
-| `save_connection` | `{ baseUrl, token, refreshIntervalMins? }` | `SettingsView` | Empty `token` keeps the saved one; `refreshIntervalMins` min 1 |
+| `save_connection` | `{ baseUrl, token, usageRefreshSecs? }` | `SettingsView` | Empty `token` keeps the saved one; `usageRefreshSecs` clamped 1-300 |
 | `get_members` | – | `string[]` | Effective (deduped union of individual + group) members |
 | `add_member` | `{ login }` | `SettingsView` | Strips `@`, case-insensitive dedupe, sorted |
 | `remove_member` | `{ login }` | `SettingsView` | Only removes from the individual list |
 | `add_group` | `{ teamSlug }` | `SettingsView` | Slug must be `org/team-slug`; imports/refreshes that group's roster |
 | `remove_group` | `{ slug }` | `SettingsView` | Untracks the group's members unless tracked elsewhere |
 | `save_ui_prefs` | `{ sidebarVisible, viewMode, theme }` | `SettingsView` | Persists sidebar visibility, list/card view, and theme choice |
-| `fetch_prs` | – | `FetchResult` | See below |
+| `fetch_prs` | `{ selectedLogins }` | `FetchResult` | Only queries logins in `selectedLogins`; see below |
 | `approve_pr` | `{ ownerRepo, prNumber, comment }` | `()` | POSTs APPROVE review |
 | `close_pr` | `{ ownerRepo, prNumber }` | `()` | PATCHes state=closed |
 | `close_pr_and_delete_branch` | `{ ownerRepo, prNumber }` | `()` | GETs head ref, closes PR, DELETEs ref |
@@ -89,8 +94,8 @@ camelCase args to Rust snake_case.
 Group = { slug: string, members: string[] }   // slug is "org/team-slug"
 
 SettingsView = { base_url: string, has_token: bool, members: string[], groups: Group[],
-                  refresh_interval_mins: u32, sidebar_visible: bool, view_mode: "list" | "card",
-                  theme: "light" | "dark" | "system" }
+                  sidebar_visible: bool, view_mode: "list" | "card",
+                  theme: "light" | "dark" | "system", usage_refresh_secs: u32 }
 
 Pr = { title, number, repo, author, url, created_at, updated_at,
        review_status: "awaiting" | "approved" | "changes_requested" }
@@ -103,13 +108,19 @@ FetchResult = { prs: Pr[], rate_limit: RateLimitStatus }
 
 `effective_members()` (Rust) / `effectiveLogins()` (JS) compute the same
 case-insensitive-deduped union of individual `members` and every group's
-roster — this is the set `fetch_prs` actually queries. The sidebar's
-select/deselect filter is purely client-side: `filterSelection` holds
-`"user:<login>"` / `"group:<slug>"` keys; empty selection means no filter.
+roster — the full tracked-team list, shown in the sidebar and Settings.
+`filterSelection` (JS-only, not persisted) holds `"user:<login>"` /
+`"group:<slug>"` keys; it is resolved to concrete logins
+(`resolvedSelectedLogins()`) and sent as `fetch_prs`'s `selectedLogins` arg —
+this, not `effective_members()`, is the actual query scope. Empty selection
+means fetch nobody; the same resolved set also narrows what's currently
+displayed from already-fetched `prs` (`selectedLogins()` in JS, lowercased).
 
 ### How PRs are fetched
 
-For each member, **three** sequential `GET /search/issues` calls:
+Only for members in `selectedLogins` (an intersection of `effective_members()`
+and the sidebar's checked users/groups) — for each, **three** sequential
+`GET /search/issues` calls:
 
 ```
 is:pr is:open draft:false archived:false author:<member>                     # all open
@@ -161,9 +172,24 @@ X/5000") right next to the existing Search API one.
 - **Opener plugin for links** — Tauri WebView won't open `<a>` externally.
   `main.js` intercepts `.pr-title` clicks and calls
   `invoke("plugin:opener|open_url", { url })`.
-- **Recursive `setTimeout` for auto-refresh** — `setInterval` fires at a fixed
-  wall-clock cadence regardless of how long the fetch takes. The recursive
-  approach starts the countdown only after the previous fetch fully resolves.
+- **No automatic API calls** — earlier versions auto-refreshed on an interval
+  and re-fetched after every add/remove/approve/close action, which burned
+  through the search quota fast on large teams. Now `fetch_prs` only ever
+  runs when the user clicks **Fetch**, and only for the sidebar's checked
+  users/groups (default: none checked). Actions that change a PR's state
+  (`approve_pr`, `close_pr`, `close_pr_and_delete_branch`) patch the local
+  `prs` array in place instead of triggering a re-fetch.
+- **"GitHub API Usage" box, not just a topbar badge** — the sidebar shows a
+  bordered panel with a horizontal meter per rate-limit bucket (Search API,
+  Core API): fill width = % of quota used, color escalates
+  accent → amber → red at the same low/critical thresholds the old topbar
+  badges used. It reads "No data yet" until the first Fetch, since checking
+  usage live would itself require a background poll. The "resets in"
+  countdown does tick live, via `scheduleUsageTick()` — a `setInterval`
+  (period: Settings' `usage_refresh_secs`, default 5s) that just re-renders
+  `lastRateLimit` against the current clock. It never calls `invoke()`, so
+  it doesn't violate the no-automatic-API-calls rule above; it only makes
+  the *displayed* countdown honest between fetches.
 - **Keyed DOM reconciliation** — `renderTable()` uses a shared `reconcileKeyed()`
   helper (keyed by PR URL) for both the table body and the card grid. On
   refresh: unchanged nodes are skipped entirely, changed ones updated in
