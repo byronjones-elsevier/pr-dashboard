@@ -21,10 +21,8 @@
         </div>
       </div>
       <div class="topbar-actions">
-        <span id="rate-limit-badge" class="rate-limit-badge hidden"></span>
-        <span id="core-rate-limit-badge" class="rate-limit-badge hidden"></span>
         <span id="last-refresh" class="muted"></span>
-        <button id="refresh-btn" class="btn primary">Refresh</button>
+        <button id="fetch-btn" class="btn primary">Fetch</button>
         <button id="settings-btn" class="btn ghost" title="Settings">⚙︎</button>
       </div>
     </header>
@@ -32,16 +30,42 @@
     <main class="layout" id="layout">
       <!-- Sidebar: filter PRs by user/group -->
       <aside class="sidebar" id="sidebar">
-        <h2>Filter</h2>
-        <p class="muted small" style="margin: -6px 0 12px;">
-          Select users or groups to narrow the PR list. Nothing selected
-          shows everyone.
-        </p>
+        <div class="sidebar-scroll">
+          <h2>Filter</h2>
+          <p class="muted small" style="margin: -6px 0 12px;">
+            Select the users or groups to fetch. Nothing selected means
+            nothing is fetched.
+          </p>
 
-        <ul id="filter-list" class="filter-list"></ul>
-        <p id="filter-empty" class="muted small">
-          No users or groups yet. Add them from Settings.
-        </p>
+          <ul id="filter-list" class="filter-list"></ul>
+          <p id="filter-empty" class="muted small">
+            No users or groups yet. Add them from Settings.
+          </p>
+        </div>
+
+        <div class="api-usage-box" id="api-usage-box">
+          <h2>GitHub API Usage</h2>
+          <div class="meter-row">
+            <div class="meter-label">
+              <span class="name">Search API</span>
+              <span class="value" id="search-usage-value">—</span>
+            </div>
+            <div class="meter-track">
+              <div class="meter-fill" id="search-usage-fill"></div>
+            </div>
+            <p class="meter-sub muted" id="search-usage-sub">No data yet — click Fetch.</p>
+          </div>
+          <div class="meter-row">
+            <div class="meter-label">
+              <span class="name">Core API</span>
+              <span class="value" id="core-usage-value">—</span>
+            </div>
+            <div class="meter-track">
+              <div class="meter-fill" id="core-usage-fill"></div>
+            </div>
+            <p class="meter-sub muted" id="core-usage-sub"></p>
+          </div>
+        </div>
       </aside>
 
       <!-- Main content: PR table -->
@@ -126,20 +150,6 @@
                   >The REST API root (<code>/api/v3</code>) is added
                   automatically.</small
                 >
-              </label>
-              <label class="field">
-                <span>Auto-refresh interval</span>
-                <div class="refresh-row">
-                  <input
-                    id="refresh-mins"
-                    type="number"
-                    min="1"
-                    max="120"
-                    style="width: 80px;"
-                  />
-                  <span class="muted" style="font-size: 13px;">minutes</span>
-                </div>
-                <small class="muted">How often the dashboard refreshes automatically.</small>
               </label>
               <label class="field">
                 <span>Personal Access Token</span>

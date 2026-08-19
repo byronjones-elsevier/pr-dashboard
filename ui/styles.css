@@ -100,28 +100,58 @@ body {
   align-items: center;
   gap: 10px;
 }
-.rate-limit-badge {
-  font-size: 12px;
-  color: var(--muted);
-  padding: 3px 8px;
-  border-radius: 999px;
-  border: 1px solid transparent;
-  white-space: nowrap;
+/* GitHub API Usage box (sidebar) */
+.api-usage-box {
+  flex: 0 0 auto;
+  margin-top: 16px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elev-2);
 }
-.rate-limit-badge.low {
-  color: var(--amber);
-  border-color: rgba(210, 153, 34, 0.4);
-  background: rgba(210, 153, 34, 0.1);
+.api-usage-box h2 {
+  margin: 0 0 12px;
 }
-.rate-limit-badge.critical {
-  color: var(--red);
-  border-color: rgba(248, 81, 73, 0.4);
-  background: rgba(248, 81, 73, 0.1);
+.meter-row + .meter-row {
+  margin-top: 14px;
 }
-.refresh-row {
+.meter-label {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+.meter-label .name {
+  font-weight: 500;
+  color: var(--text);
+}
+.meter-label .value {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.meter-track {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--border);
+  overflow: hidden;
+}
+.meter-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 0.3s ease;
+}
+.meter-fill.low {
+  background: var(--amber);
+}
+.meter-fill.critical {
+  background: var(--red);
+}
+.meter-sub {
+  margin: 4px 0 0;
+  font-size: 11px;
 }
 
 /* Buttons */
@@ -183,10 +213,19 @@ body {
 
 /* Sidebar */
 .sidebar {
+  display: flex;
+  flex-direction: column;
   border-right: 1px solid var(--border);
   padding: 16px;
-  overflow-y: auto;
+  overflow: hidden;
   background: var(--bg-elev);
+}
+/* Scrolls independently so the pinned API Usage box below it never gets
+   pushed off-screen by a long user/group list. */
+.sidebar-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
 }
 .sidebar h2 {
   font-size: 12px;
