@@ -23,6 +23,15 @@
       <div class="topbar-actions">
         <span id="last-refresh" class="muted"></span>
         <button id="fetch-btn" class="btn primary">Fetch</button>
+        <div class="help-menu-wrap">
+          <button id="help-btn" class="btn ghost" title="Help">Help</button>
+          <div id="help-menu" class="help-menu hidden" role="menu" aria-label="Help menu">
+            <button type="button" class="help-menu-item" data-help-action="open-help">Open Help</button>
+            <button type="button" class="help-menu-item" data-help-action="version">Version</button>
+            <button type="button" class="help-menu-item" data-help-action="github">GitHub</button>
+            <button type="button" class="help-menu-item" data-help-action="report-issue">Report an Issue</button>
+          </div>
+        </div>
         <button id="settings-btn" class="btn ghost" title="Settings">⚙︎</button>
       </div>
     </header>
@@ -124,6 +133,50 @@
         <div id="empty-state" class="empty hidden"></div>
       </section>
     </main>
+
+    <!-- Version modal -->
+    <div id="version-modal" class="modal hidden">
+      <div class="modal-card version-card">
+        <h2>App version</h2>
+        <dl class="version-list">
+          <div>
+            <dt>App</dt>
+            <dd id="version-app">—</dd>
+          </div>
+          <div>
+            <dt>Tauri</dt>
+            <dd id="version-tauri">—</dd>
+          </div>
+          <div>
+            <dt>Opener plugin</dt>
+            <dd id="version-opener">—</dd>
+          </div>
+        </dl>
+        <div class="modal-actions">
+          <button id="version-close" class="btn primary">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- First-run onboarding modal -->
+    <div id="first-run-modal" class="modal hidden">
+      <div class="modal-card" style="width: 420px;">
+        <h2>Welcome to Team PR Dashboard</h2>
+        <p class="muted" style="margin: -8px 0 16px; font-size: 13px;">
+          This app helps you track pull requests for your team. If you need help
+          getting started, open the help guide for setup and usage details.
+        </p>
+        <ul style="margin: 0 0 18px; padding-left: 18px; color: var(--text); line-height: 1.6;">
+          <li>Set your GitHub host and personal access token in Settings.</li>
+          <li>Add individual users or team groups to track.</li>
+          <li>Fetch PRs and review the dashboard from the main screen.</li>
+        </ul>
+        <div class="modal-actions">
+          <button id="first-run-close" class="btn ghost">Close</button>
+          <button id="first-run-open-help" class="btn primary">Open Help</button>
+        </div>
+      </div>
+    </div>
 
     <!-- Settings modal -->
     <div id="settings-modal" class="modal hidden">
