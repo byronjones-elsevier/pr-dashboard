@@ -8,6 +8,7 @@ function openExternal(url) {
 
 function closeHelpMenu() {
   el("help-menu").classList.add("hidden");
+  el("help-btn").setAttribute("aria-expanded", "false");
 }
 
 function openHelpMenu() {
