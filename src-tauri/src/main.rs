@@ -26,6 +26,10 @@ fn default_theme() -> String {
     "system".to_string()
 }
 
+fn default_first_run() -> bool {
+    true
+}
+
 /// A persisted GitHub team: `slug` is "org/team-slug", `members` is the
 /// team's roster as of the last import/refresh.
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -36,7 +40,7 @@ struct Group {
     members: Vec<String>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Default)]
+#[derive(Serialize, Deserialize, Clone)]
 struct Settings {
     #[serde(default)]
     base_url: String,
@@ -55,10 +59,28 @@ struct Settings {
     view_mode: String,
     #[serde(default = "default_theme")]
     theme: String,
+    #[serde(default = "default_first_run")]
+    first_run: bool,
     // How often (seconds) the sidebar's "resets in" countdown re-renders.
     // Purely local — re-paints the last fetched numbers, never makes a call.
     #[serde(default = "default_usage_refresh_secs")]
     usage_refresh_secs: u32,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            base_url: String::new(),
+            token: String::new(),
+            members: Vec::new(),
+            groups: Vec::new(),
+            sidebar_visible: default_true(),
+            view_mode: default_view_mode(),
+            theme: default_theme(),
+            first_run: default_first_run(),
+            usage_refresh_secs: default_usage_refresh_secs(),
+        }
+    }
 }
 
 /// Union of individually-added members and every group's roster, deduped
@@ -89,6 +111,7 @@ struct SettingsView {
     sidebar_visible: bool,
     view_mode: String,
     theme: String,
+    first_run: bool,
     usage_refresh_secs: u32,
 }
 
@@ -110,6 +133,7 @@ impl From<&Settings> for SettingsView {
             } else {
                 s.theme.clone()
             },
+            first_run: s.first_run,
             usage_refresh_secs: if s.usage_refresh_secs == 0 {
                 default_usage_refresh_secs()
             } else {
@@ -534,6 +558,25 @@ fn get_settings(app: tauri::AppHandle) -> SettingsView {
     SettingsView::from(&read_settings(&app))
 }
 
+#[derive(Serialize)]
+struct AppInfo {
+    app_name: String,
+    app_version: String,
+    tauri_version: String,
+    opener_version: String,
+}
+
+// JS: invoke("get_app_info")
+#[tauri::command]
+fn get_app_info() -> AppInfo {
+    AppInfo {
+        app_name: env!("CARGO_PKG_NAME").to_string(),
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+        tauri_version: tauri::VERSION.to_string(),
+        opener_version: "tauri-plugin-opener v2".to_string(),
+    }
+}
+
 #[tauri::command]
 fn save_connection(
     app: tauri::AppHandle,
@@ -570,6 +613,14 @@ fn save_connection(
         write_settings(&app, &s)?;
     }
 
+    Ok(SettingsView::from(&s))
+}
+
+#[tauri::command]
+fn mark_first_run_seen(app: tauri::AppHandle) -> Result<SettingsView, String> {
+    let mut s = read_settings(&app);
+    s.first_run = false;
+    write_settings(&app, &s)?;
     Ok(SettingsView::from(&s))
 }
 
@@ -1029,7 +1080,9 @@ fn main() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             get_settings,
+            get_app_info,
             save_connection,
+            mark_first_run_seen,
             get_members,
             add_member,
             remove_member,

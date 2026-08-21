@@ -6,6 +6,67 @@ function openExternal(url) {
   invoke("plugin:opener|open_url", { url }).catch((e) => showBanner(String(e)));
 }
 
+function closeHelpMenu() {
+  el("help-menu").classList.add("hidden");
+  el("help-btn").setAttribute("aria-expanded", "false");
+}
+
+function openHelpMenu() {
+  el("help-menu").classList.remove("hidden");
+  el("help-btn").setAttribute("aria-expanded", "true");
+}
+
+function openHelpPage() {
+  window.location.assign("help.html");
+  closeHelpMenu();
+}
+
+async function openGitHubRepo() {
+  openExternal("https://github.com/ByronJones-Elsevier/pr-dashboard/");
+  closeHelpMenu();
+}
+
+async function openReportIssue() {
+  openExternal("https://github.com/byronjones-elsevier/pr-dashboard/issues");
+  closeHelpMenu();
+}
+
+async function openVersionDialog() {
+  try {
+    const info = await invoke("get_app_info");
+    el("version-app").textContent = `${info.app_name} ${info.app_version}`;
+    el("version-tauri").textContent = info.tauri_version;
+    el("version-opener").textContent = info.opener_version;
+  } catch (e) {
+    el("version-app").textContent = "Unavailable";
+    el("version-tauri").textContent = "Unavailable";
+    el("version-opener").textContent = "Unavailable";
+    showBanner(String(e));
+  }
+  closeHelpMenu();
+  el("version-modal").classList.remove("hidden");
+}
+
+function closeVersionDialog() {
+  el("version-modal").classList.add("hidden");
+}
+
+function openFirstRunDialog() {
+  el("first-run-modal").classList.remove("hidden");
+}
+
+function closeFirstRunDialog() {
+  el("first-run-modal").classList.add("hidden");
+}
+
+async function markFirstRunSeen() {
+  try {
+    window.__cfg = await invoke("mark_first_run_seen");
+  } catch (e) {
+    console.warn("Could not persist first-run flag:", e);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
@@ -1013,6 +1074,52 @@ document.querySelectorAll(".settings-nav-btn").forEach((btn) => {
 });
 
 el("fetch-btn").addEventListener("click", fetchPrs);
+el("help-btn").addEventListener("click", () => {
+  const menu = el("help-menu");
+  if (menu.classList.contains("hidden")) {
+    openHelpMenu();
+  } else {
+    closeHelpMenu();
+  }
+});
+document.addEventListener("click", (e) => {
+  if (!e.target.closest("#help-btn") && !e.target.closest("#help-menu")) {
+    closeHelpMenu();
+  }
+});
+document.querySelectorAll(".help-menu-item").forEach((btn) => {
+  btn.addEventListener("click", async () => {
+    const action = btn.dataset.helpAction;
+    if (action === "open-help") {
+      await openHelpPage();
+    } else if (action === "version") {
+      await openVersionDialog();
+    } else if (action === "github") {
+      await openGitHubRepo();
+    } else if (action === "report-issue") {
+      await openReportIssue();
+    }
+  });
+});
+el("version-close").addEventListener("click", closeVersionDialog);
+el("version-modal").addEventListener("click", (e) => {
+  if (e.target.id === "version-modal") closeVersionDialog();
+});
+el("first-run-close").addEventListener("click", async () => {
+  closeFirstRunDialog();
+  await markFirstRunSeen();
+});
+el("first-run-open-help").addEventListener("click", async () => {
+  closeFirstRunDialog();
+  await markFirstRunSeen();
+  await openHelpPage();
+});
+el("first-run-modal").addEventListener("click", async (e) => {
+  if (e.target.id === "first-run-modal") {
+    closeFirstRunDialog();
+    await markFirstRunSeen();
+  }
+});
 el("settings-btn").addEventListener("click", openSettings);
 el("settings-cancel").addEventListener("click", closeSettings);
 el("settings-save").addEventListener("click", saveSettings);
@@ -1090,6 +1197,10 @@ async function init() {
     updateCoreUsageMeter(null);
     renderTable();
     scheduleUsageTick();
+
+    if (window.__cfg.first_run !== false) {
+      openFirstRunDialog();
+    }
 
     if (!window.__cfg.base_url || !window.__cfg.has_token) {
       openSettings();

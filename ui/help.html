@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Team PR Dashboard Help</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #0d1117;
+        --bg-elev: #161b22;
+        --border: #30363d;
+        --text: #e6edf3;
+        --muted: #8b949e;
+        --accent: #2f81f7;
+      }
+
+      body {
+        margin: 0;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: var(--bg);
+        color: var(--text);
+      }
+
+      .page {
+        max-width: 760px;
+        margin: 40px auto;
+        padding: 0 20px 40px;
+      }
+
+      .title-row {
+        display: flex;
+        align-items: baseline;
+        gap: 14px;
+        margin-bottom: 8px;
+      }
+
+      .title-logo {
+        width: 42px;
+        height: 42px;
+        object-fit: contain;
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.04);
+        padding: 4px;
+        border: 1px solid var(--border);
+        vertical-align: baseline;
+      }
+
+      h1 {
+        margin: 0;
+        line-height: 1.1;
+      }
+
+      p, li {
+        line-height: 1.6;
+        color: var(--text);
+      }
+
+      .muted {
+        color: var(--muted);
+      }
+
+      .card {
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: var(--bg-elev);
+        padding: 20px 22px;
+        margin-top: 18px;
+      }
+
+      code {
+        background: rgba(110, 118, 129, 0.2);
+        border-radius: 4px;
+        padding: 2px 6px;
+      }
+
+      a {
+        color: var(--accent);
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <div class="title-row">
+        <img class="title-logo" src="assets/Elsevier.png" alt="Elsevier logo" />
+        <h1>Team PR Dashboard</h1>
+      </div>
+      <p class="muted"><a href="./index.html">← Back to dashboard</a></p>
+      <p class="muted">Help and overview</p>
+
+      <section class="card">
+        <h2>What this app does</h2>
+        <p>
+          Team PR Dashboard helps you quickly track open pull requests authored by the
+          people or teams you care about, across your GitHub Enterprise or GitHub.com instance.
+        </p>
+        <ul>
+          <li>Fetch open PRs for selected users or imported teams.</li>
+          <li>Filter by title, repo, author, or “needs attention”.</li>
+          <li>Switch between list and card views.</li>
+          <li>Approve, close, or close-and-delete-branch directly from the UI.</li>
+        </ul>
+      </section>
+
+      <section class="card">
+        <h2>Initial setup</h2>
+        <p>
+          When you first launch the app, it will prompt you to go to <strong>Settings</strong>.
+          This is where you set up the connection to GitHub and the personal access token used for
+          the API calls.
+        </p>
+        <ol>
+          <li>Click the gear icon in the top-right corner.</li>
+          <li>In <strong>Connections</strong>, enter your GitHub host, such as <code>https://github.com</code> or a GitHub Enterprise base URL.</li>
+          <li>Paste a GitHub personal access token with the required repo access. The token is stored securely in the OS keychain when available.</li>
+          <li>Set the API usage refresh interval if you want the quota countdown to update more or less often.</li>
+          <li>Save your settings.</li>
+        </ol>
+        <p class="muted">
+          If the token is left blank, the app keeps the previously saved token. That makes it easy to update the host without losing the token.
+        </p>
+      </section>
+
+      <section class="card">
+        <h2>Choosing users and groups</h2>
+        <p>
+          The left sidebar is the main selection area. It controls which authors the app queries for PRs.
+          Nothing is fetched until at least one user or group is selected.
+        </p>
+        <ul>
+          <li><strong>Individual users:</strong> add a GitHub username such as <code>my-login</code>.</li>
+          <li><strong>Groups:</strong> add a team in the form <code>org/team-slug</code>. The app imports the current team roster from GitHub.</li>
+          <li>Use the checkboxes to toggle the users or groups currently included in the fetch.</li>
+          <li>Removing a group only stops tracking that group; it does not delete any other individual user tracking.</li>
+        </ul>
+        <p>
+          This means you can track a single developer, an entire team, or a mix of both, depending on how you want to monitor pull requests.
+        </p>
+      </section>
+
+      <section class="card">
+        <h2>Fetching and reviewing pull requests</h2>
+        <p>
+          Once your GitHub connection is configured and at least one user/group is selected, click the
+          <strong>Fetch</strong> button to load the open PRs that match your current selection.
+        </p>
+        <ul>
+          <li>The app shows PR age, repo, author, review status, and the date of the last activity.</li>
+          <li>Use the search box to filter PRs by title, repository, or author.</li>
+          <li>Enable <strong>Needs attention</strong> to focus on items that likely need action.</li>
+          <li>Use the list/card toggle to switch between a table and summary cards.</li>
+        </ul>
+      </section>
+
+      <section class="card">
+        <h2>Using each section of the app</h2>
+        <h3>Sidebar</h3>
+        <p>
+          The sidebar is your query scope. It contains the tracked individuals and imported team groups.
+          Checking a box tells the app to include that person or team in the next fetch.
+        </p>
+
+        <h3>Header actions</h3>
+        <p>
+          The top bar includes the main actions for the dashboard. <strong>Fetch</strong> reloads the selected PR list,
+          while the Help menu contains the app help, version dialog, and GitHub repository link.
+        </p>
+
+        <h3>Toolbar</h3>
+        <p>
+          The toolbar lets you switch between list and card views, filter the active PR list, and use the export feature
+          when you need to save a report.
+        </p>
+
+        <h3>Table / Card content area</h3>
+        <p>
+          This is where the open PRs appear. Each row or card shows the title, repo, author, review status, and age.
+          Clicking a PR title opens the GitHub page in your browser, and action buttons let you approve or close PRs directly.
+        </p>
+
+        <h3>API usage box</h3>
+        <p>
+          The sidebar also shows Search API and Core API quota information. This helps you understand whether the app is approaching GitHub rate limits.
+        </p>
+      </section>
+
+      <section class="card">
+        <h2>Review and action workflow</h2>
+        <p>
+          Each pull request has action buttons that let you quickly act on it without leaving the app:
+        </p>
+        <ul>
+          <li><strong>Approve:</strong> leave a review comment and mark the PR as approved.</li>
+          <li><strong>Open Review:</strong> opens the PR in GitHub.</li>
+          <li><strong>Close:</strong> marks the PR as closed.</li>
+          <li><strong>Close + delete branch:</strong> closes the PR and removes its head branch.</li>
+        </ul>
+      </section>
+
+      <section class="card">
+        <h2>Links</h2>
+        <p>
+          Repository: <a href="https://github.com/ByronJones-Elsevier/pr-dashboard/">ByronJones-Elsevier/pr-dashboard</a>
+        </p>
+      </section>
+    </main>
+  </body>
+</html>
