@@ -40,7 +40,7 @@ struct Group {
     members: Vec<String>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Default)]
+#[derive(Serialize, Deserialize, Clone)]
 struct Settings {
     #[serde(default)]
     base_url: String,
@@ -65,6 +65,22 @@ struct Settings {
     // Purely local — re-paints the last fetched numbers, never makes a call.
     #[serde(default = "default_usage_refresh_secs")]
     usage_refresh_secs: u32,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            base_url: String::new(),
+            token: String::new(),
+            members: Vec::new(),
+            groups: Vec::new(),
+            sidebar_visible: default_true(),
+            view_mode: default_view_mode(),
+            theme: default_theme(),
+            first_run: default_first_run(),
+            usage_refresh_secs: default_usage_refresh_secs(),
+        }
+    }
 }
 
 /// Union of individually-added members and every group's roster, deduped

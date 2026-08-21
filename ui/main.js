@@ -13,6 +13,7 @@ function closeHelpMenu() {
 
 function openHelpMenu() {
   el("help-menu").classList.remove("hidden");
+  el("help-btn").setAttribute("aria-expanded", "true");
 }
 
 function openHelpPage() {
@@ -1075,7 +1076,11 @@ document.querySelectorAll(".settings-nav-btn").forEach((btn) => {
 el("fetch-btn").addEventListener("click", fetchPrs);
 el("help-btn").addEventListener("click", () => {
   const menu = el("help-menu");
-  menu.classList.toggle("hidden");
+  if (menu.classList.contains("hidden")) {
+    openHelpMenu();
+  } else {
+    closeHelpMenu();
+  }
 });
 document.addEventListener("click", (e) => {
   if (!e.target.closest("#help-btn") && !e.target.closest("#help-menu")) {

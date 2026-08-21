@@ -24,12 +24,12 @@
         <span id="last-refresh" class="muted"></span>
         <button id="fetch-btn" class="btn primary">Fetch</button>
         <div class="help-menu-wrap">
-          <button id="help-btn" class="btn ghost" title="Help">Help</button>
+          <button id="help-btn" class="btn ghost" title="Help" aria-haspopup="menu" aria-expanded="false" aria-controls="help-menu">Help</button>
           <div id="help-menu" class="help-menu hidden" role="menu" aria-label="Help menu">
-            <button type="button" class="help-menu-item" data-help-action="open-help">Open Help</button>
-            <button type="button" class="help-menu-item" data-help-action="version">Version</button>
-            <button type="button" class="help-menu-item" data-help-action="github">GitHub</button>
-            <button type="button" class="help-menu-item" data-help-action="report-issue">Report an Issue</button>
+            <button type="button" class="help-menu-item" role="menuitem" data-help-action="open-help">Open Help</button>
+            <button type="button" class="help-menu-item" role="menuitem" data-help-action="version">Version</button>
+            <button type="button" class="help-menu-item" role="menuitem" data-help-action="github">GitHub</button>
+            <button type="button" class="help-menu-item" role="menuitem" data-help-action="report-issue">Report an Issue</button>
           </div>
         </div>
         <button id="settings-btn" class="btn ghost" title="Settings">⚙︎</button>
