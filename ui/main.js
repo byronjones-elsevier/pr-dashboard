@@ -14,9 +14,8 @@ function openHelpMenu() {
   el("help-menu").classList.remove("hidden");
 }
 
-async function openHelpPage() {
-  const helpUrl = new URL("./help.html", window.location.href).toString();
-  openExternal(helpUrl);
+function openHelpPage() {
+  window.location.assign("help.html");
   closeHelpMenu();
 }
 
