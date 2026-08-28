@@ -50,7 +50,7 @@ your team, across your whole GitHub Enterprise instance.
 2. **Node.js 18+** and npm
 3. Tauri OS dependencies — https://tauri.app/start/prerequisites/
    (Linux: WebKitGTK 4.1; macOS: Xcode CLI tools; Windows: WebView2 runtime)
-
+4. A Github API Key with the Correct Permissions: [Github API Key Requirements](Github_API_Key_Requirements.md)
 ## Run it
 
 ```bash
