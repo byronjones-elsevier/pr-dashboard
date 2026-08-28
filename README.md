@@ -31,13 +31,14 @@ your team, across your whole GitHub Enterprise instance.
   - 🗑 **Close PR + branch** — closes the PR and deletes its head branch (with confirmation)
 - **Auto-refresh** — fetches on a configurable interval (default 10 min). The
   countdown starts only after the previous fetch fully completes.
-- **Rate-limit pacing** — tracks `X-RateLimit-Remaining` headers; sleeps until
-  the window resets when quota drops below 3 before making the next call. Large
-  teams spread automatically across multiple 1-minute windows.
-- **Core API protection** — a second topbar badge tracks the core rate limit
-  (5000/hr) used by team imports, approve/close/delete-branch. If it's ever
-  fully exhausted mid-action, the app waits out the reset and retries once
-  automatically instead of surfacing a raw error.
+- **Github API Usage Tracking** - An Information Box at the bottom left tracks API Usage:
+  - **Rate-limit pacing** — tracks `X-RateLimit-Remaining` headers; sleeps until
+    the window resets when quota drops below 3 before making the next call. Large
+    teams spread automatically across multiple 1-minute windows.
+  - **Core API protection** — tracks the core rate limit
+    (5000/hr) used by team imports, approve/close/delete-branch. If it's ever
+    fully exhausted mid-action, the app waits out the reset and retries once
+    automatically instead of surfacing a raw error.
 - **Incremental rendering** — on refresh, only rows whose data has changed are
   updated. Unchanged rows are not touched; scroll position is preserved.
 - **Loading animation** — a spinner shows while the very first batch of PRs is
